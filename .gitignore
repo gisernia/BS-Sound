@@ -1,0 +1,7 @@
+# Configurazione e dati locali
+config.cfg
+favorites.json
+
+# Cache Python
+__pycache__/
+*.py[cod]
