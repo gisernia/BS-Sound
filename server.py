@@ -6,6 +6,7 @@
 import html
 import json
 import threading
+import time
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -320,7 +321,7 @@ def set_volume(value):
 
 def press_key(key):
 
-    sender = "SoundTouchRadio"
+    sender = "Gabbo"
 
     press = (
         f'<key state="press" '
@@ -471,6 +472,49 @@ def play_radio(
     )
 
 
+def store_radio_preset(
+    number,
+    name,
+    stream_url,
+    favicon=""
+):
+
+    if number < 1 or number > 6:
+        raise ValueError("Preset deve essere 1..6")
+
+    if not stream_url:
+        raise ValueError("La stazione non ha un URL stream.")
+
+    timestamp = int(time.time())
+
+    location = (
+        "http://contentapi.gmuth.de/"
+        "station.php?name="
+        + urllib.parse.quote(name, safe="")
+        + "&streamUrl="
+        + urllib.parse.quote(stream_url, safe="")
+    )
+
+    xml = (
+        f'<preset id="{number}" '
+        f'createdOn="{timestamp}" '
+        f'updatedOn="{timestamp}">'
+        '<ContentItem source="LOCAL_INTERNET_RADIO" '
+        'type="stationurl" '
+        f'location="{html.escape(location, quote=True)}" '
+        'sourceAccount="" '
+        'isPresetable="true">'
+        f'<itemName>{html.escape(name)}</itemName>'
+    )
+
+    if favicon:
+        xml += f'<containerArt>{html.escape(favicon)}</containerArt>'
+
+    xml += "</ContentItem></preset>"
+
+    return bose_post("/storePreset", xml)
+
+
 # ============================================================
 # RADIO BROWSER
 # ============================================================
@@ -489,26 +533,19 @@ def radio_search(
                 100
             )
         ),
-
         "order": "votes",
-
         "reverse": "true",
-
         "hidebroken": "true",
     }
 
     if country:
 
-        params[
-            "countrycode"
-        ] = country.upper()
+        params["countrycode"] = country.upper()
 
     url = (
         RADIO_BROWSER_HOST
-        +
-        "/json/stations/search?"
-        +
-        urllib.parse.urlencode(
+        + "/json/stations/search?"
+        + urllib.parse.urlencode(
             params
         )
     )
@@ -529,13 +566,9 @@ def radio_search(
     for station in stations:
 
         stream = (
-            station.get(
-                "url_resolved"
-            )
+            station.get("url_resolved")
             or
-            station.get(
-                "url"
-            )
+            station.get("url")
         )
 
         if not stream:
@@ -544,52 +577,28 @@ def radio_search(
         result.append({
 
             "id":
-                station.get(
-                    "stationuuid",
-                    ""
-                ),
+                station.get("stationuuid", ""),
 
             "name":
-                station.get(
-                    "name",
-                    ""
-                ),
+                station.get("name", ""),
 
             "country":
-                station.get(
-                    "country",
-                    ""
-                ),
+                station.get("country", ""),
 
             "language":
-                station.get(
-                    "language",
-                    ""
-                ),
+                station.get("language", ""),
 
             "codec":
-                station.get(
-                    "codec",
-                    ""
-                ),
+                station.get("codec", ""),
 
             "bitrate":
-                station.get(
-                    "bitrate",
-                    0
-                ),
+                station.get("bitrate", 0),
 
             "homepage":
-                station.get(
-                    "homepage",
-                    ""
-                ),
+                station.get("homepage", ""),
 
             "favicon":
-                station.get(
-                    "favicon",
-                    ""
-                ),
+                station.get("favicon", ""),
 
             "stream":
                 stream,
@@ -1857,6 +1866,26 @@ function renderStations(
                 };
 
 
+            const preset =
+                document.createElement(
+                    "button"
+                );
+
+
+            preset.textContent = "＋";
+            preset.title = "Salva in un preset Bose";
+
+
+            preset.onclick =
+                function() {
+
+                    savePreset(
+                        station
+                    );
+
+                };
+
+
             row.appendChild(
                 play
             );
@@ -1864,6 +1893,11 @@ function renderStations(
 
             row.appendChild(
                 favorite
+            );
+
+
+            row.appendChild(
+                preset
             );
 
 
@@ -1900,6 +1934,68 @@ async function playStation(
                         station
                     )
 
+            }
+        );
+
+
+        await refresh();
+
+    }
+
+    catch(error) {
+
+        showError(error);
+
+    }
+
+}
+
+
+async function savePreset(
+    station
+) {
+
+    const answer = window.prompt(
+        "In quale preset vuoi salvare questa radio? (1-6)"
+    );
+
+
+    if(answer === null)
+        return;
+
+
+    const number = Number(answer);
+
+
+    if(
+        !Number.isInteger(number)
+        ||
+        number < 1
+        ||
+        number > 6
+    ) {
+
+        showError(
+            new Error("Inserisci un numero da 1 a 6.")
+        );
+
+        return;
+
+    }
+
+
+    try {
+
+        await api(
+            "/api/preset/"
+            + number
+            + "/store",
+            {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify(station)
             }
         );
 
@@ -2353,11 +2449,12 @@ class Handler(
                 "/api/preset/"
             ):
 
-                number = int(
-                        path[
-                            len("/api/preset/"):
-                        ]
-                    )
+                parts = path.split("/")
+
+                if len(parts) not in (4, 5):
+                    raise ValueError("URL preset non valido")
+
+                number = int(parts[3])
 
 
                 if number < 1 or number > 6:
@@ -2367,9 +2464,37 @@ class Handler(
                     )
 
 
-                press_key(
-                    f"PRESET_{number}"
-                )
+                action = parts[4] if len(parts) == 5 else "play"
+
+                if action == "store":
+
+                    if not is_source_ready("LOCAL_INTERNET_RADIO"):
+                        raise ValueError(
+                            "Internet Radio non è disponibile sulla Bose."
+                        )
+
+                    station = self.read_json()
+
+                    store_radio_preset(
+                        number,
+                        station.get("name", "Radio"),
+                        station.get("stream", ""),
+                        station.get("favicon", "")
+                    )
+
+                elif action == "remove":
+
+                    bose_post(
+                        "/removePreset",
+                        f'<preset id="{number}"/>'
+                    )
+
+                elif action == "play":
+
+                    press_key(f"PRESET_{number}")
+
+                else:
+                    raise ValueError("Azione preset non valida")
 
 
                 self.send_json({
@@ -2414,25 +2539,19 @@ class Handler(
                     )
 
 
-                stream = (
-                        station.get(
-                            "stream"
-                        )
-                        or
-                        station.get(
-                            "url_resolved"
-                        )
-                        or
-                        station.get(
-                            "url"
-                        )
-                    )
-
-
                 favicon = station.get(
                         "favicon",
                         ""
                     )
+
+
+                stream = (
+                    station.get("stream")
+                    or
+                    station.get("url_resolved")
+                    or
+                    station.get("url")
+                )
 
 
                 if not stream:
