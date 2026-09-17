@@ -74,4 +74,4 @@ Il server non implementa autenticazione: usalo solo su una rete fidata e non esp
 
 ## Licenza
 
-Non è ancora stata scelta una licenza. Prima di pubblicare il progetto, aggiungi un file `LICENSE` (ad esempio MIT) se desideri consentire a terzi di riutilizzare il codice.
+Distribuito con [Apache License 2.0](LICENSE). Il file [NOTICE](NOTICE) richiede di mantenere l'attribuzione a [Beasof.com](https://beasof.com) nelle redistribuzioni e nelle opere derivate.
