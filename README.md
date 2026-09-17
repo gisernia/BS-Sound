@@ -33,10 +33,11 @@ git clone https://github.com/TUO-UTENTE/soundtouch-radio.git
 cd soundtouch-radio
 ```
 
-Crea la configurazione locale a partire dall'esempio:
+Crea la configurazione e i preferiti locali a partire dagli esempi:
 
 ```bash
 cp config.example.cfg config.cfg
+cp favorites.example.json favorites.json
 ```
 
 Apri `config.cfg` e imposta l'indirizzo IP del tuo dispositivo Bose:
