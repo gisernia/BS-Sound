@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="it" data-theme="system">
+
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>SoundTouch Radio</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+
+<body>
+
+<header>
+  <h1>📻 SoundTouch Radio</h1>
+  <div class="status" id="status">Connessione...</div>
+  <div class="theme-control">
+    <label for="themeSelect">Tema</label>
+    <select id="themeSelect" aria-label="Tema dell'interfaccia" onchange="setTheme(this.value)">
+      <option value="system">Sistema</option>
+      <option value="light">Light</option>
+      <option value="dark">Dark</option>
+    </select>
+  </div>
+</header>
+
+<main>
+
+  <!-- NOW PLAYING -->
+  <section class="card">
+    <div class="now-title" id="nowTitle">—</div>
+    <div class="now-details" id="nowDetails"></div>
+    <div class="row controls">
+      <button onclick="sendKey('PLAY_PAUSE')">⏯</button>
+      <button onclick="sendKey('PREV_TRACK')">⏮</button>
+      <button onclick="sendKey('NEXT_TRACK')">⏭</button>
+      <button onclick="sendKey('MUTE')">🔇</button>
+      <input class="volume" id="volume" type="range" min="0" max="100" value="0" oninput="changeVolume(this.value)">
+      <span id="volumeText">--</span>
+    </div>
+  </section>
+
+  <!-- SEARCH -->
+  <section class="card">
+    <div class="row">
+      <input id="query" class="searchbox" placeholder="Cerca radio..." onkeydown="if(event.key==='Enter') searchRadio()">
+      <button class="primary" onclick="searchRadio()">Cerca</button>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <input id="country" placeholder="Paese ISO, es. IT">
+      <button onclick="loadFavorites()">⭐ Preferite</button>
+    </div>
+  </section>
+
+  <!-- PRESETS -->
+  <section class="card">
+    <b>Preset Bose</b>
+    <div class="row" id="presets" style="margin-top:10px"></div>
+  </section>
+
+  <!-- RESULTS -->
+  <section class="card">
+    <div id="results"></div>
+    <div class="error" id="error"></div>
+  </section>
+
+  <!-- PRESET SELECTION MODAL -->
+  <div id="presetModal" class="modal-overlay" style="display:none;" onclick="if(event.target===this) closePresetModal()">
+    <div class="modal-card">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+        <h3 style="margin:0; font-size:18px;">Salva nei Preset Bose (1–6)</h3>
+        <button type="button" onclick="closePresetModal()" style="background:none; border:none; color:var(--muted); font-size:24px; cursor:pointer; padding:0 5px;">&times;</button>
+      </div>
+      <div style="font-size:14px; color:var(--muted); margin-bottom:15px;">
+        Seleziona dove salvare: <b id="modalStationName" style="color:var(--text)"></b>
+      </div>
+      <div id="presetModalGrid" class="preset-grid"></div>
+      <div style="margin-top:20px; text-align:right;">
+        <button type="button" onclick="closePresetModal()" style="padding:8px 16px;">Annulla</button>
+      </div>
+    </div>
+  </div>
+
+</main>
+
+<script src="/static/app.js"></script>
+
+</body>
+</html>

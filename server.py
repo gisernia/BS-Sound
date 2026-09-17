@@ -23,6 +23,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = BASE_DIR / "config.cfg"
 FAVORITES_FILE = BASE_DIR / "favorites.json"
+TEMPLATES_DIR = BASE_DIR / "templates"
+STATIC_DIR = BASE_DIR / "static"
 
 
 DEFAULT_CONFIG = {
@@ -405,114 +407,125 @@ def get_presets():
 # PLAY RADIO STREAM
 # ============================================================
 
-def play_radio(
-    name,
-    stream_url,
-    favicon=""
-):
+# Preset virtuali in memoria: numero (1-6) -> {name, stream_url, favicon}
+# Usati per riprodurre via UPnP al click del preset nell'interfaccia web.
+_virtual_presets = {}
+_virtual_presets_lock = threading.Lock()
 
-    if not stream_url:
-        raise ValueError(
-            "La stazione non ha un URL stream."
-        )
 
-    # URL-encode della radio.
-    #
-    # SoundTouch accetta LOCAL_INTERNET_RADIO
-    # con type=stationurl.
-    #
-    # Formato usato:
-    #
-    #   location="...?streamUrl=<URL>"
-    #
-    # Questo è il meccanismo documentato/usato
-    # dalle implementazioni SoundTouch.
-    #
-    encoded_stream = urllib.parse.quote(
-        stream_url,
-        safe=""
+def _save_virtual_preset(number, name, stream_url, favicon=""):
+    with _virtual_presets_lock:
+        _virtual_presets[number] = {
+            "name": name,
+            "stream_url": stream_url,
+            "favicon": favicon,
+        }
+
+
+def get_virtual_preset(number):
+    with _virtual_presets_lock:
+        return _virtual_presets.get(number)
+
+
+def resolve_stream_url(url):
+    """Risolve playlist .pls/.m3u al primo URL HTTP diretto trovato."""
+    if not url:
+        return url
+    url_lower = url.lower()
+    if url_lower.endswith('.pls') or url_lower.endswith('.m3u'):
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={"User-Agent": "SoundTouchRadio/1.0"}
+            )
+            with urllib.request.urlopen(req, timeout=4) as resp:
+                content_text = resp.read().decode("utf-8", "ignore")
+                for line in content_text.splitlines():
+                    line = line.strip()
+                    if line.startswith("http://") or line.startswith("https://"):
+                        return line
+                    if line.startswith("File1="):
+                        return line.split("=", 1)[1].strip()
+        except Exception:
+            pass
+    return url
+
+
+def _force_http(url):
+    """La Bose SoundTouch non supporta HTTPS per gli stream UPnP."""
+    if url.startswith("https://"):
+        return "http://" + url[8:]
+    return url
+
+
+def _soap_envelope(action, body):
+    return (
+        '<?xml version="1.0"?>'
+        '<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" '
+        's:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">'
+        '<s:Body>'
+        f'<u:{action} xmlns:u="urn:schemas-upnp-org:service:AVTransport:1">'
+        f'{body}'
+        f'</u:{action}>'
+        '</s:Body>'
+        '</s:Envelope>'
     )
 
-    location = (
-        "http://contentapi.gmuth.de/"
-        "station.php?"
-        "name="
-        + urllib.parse.quote(
-            name,
-            safe=""
-        )
-        +
-        "&streamUrl="
-        +
-        encoded_stream
+
+def _post_avtransport(action, body):
+    """Invia una chiamata SOAP UPnP AVTransport alla Bose sulla porta 8091."""
+    url = f"http://{BOSE_IP}:8091/AVTransport/Control"
+    payload = _soap_envelope(action, body).encode("utf-8")
+    headers = {
+        "User-Agent": "SoundTouchRadio/1.0",
+        "Content-Type": 'text/xml; charset="utf-8"',
+        "SOAPAction": f'"urn:schemas-upnp-org:service:AVTransport:1#{action}"',
+    }
+    request = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+    with urllib.request.urlopen(request, timeout=10) as response:
+        return response.read()
+
+
+def play_upnp(stream_url):
+    """
+    Avvia la riproduzione di uno stream via UPnP AVTransport (porta 8091).
+    Unico metodo funzionante post-shutdown del cloud Bose (maggio 2026).
+    LOCAL_INTERNET_RADIO e INTERNET_RADIO restituiscono UNKNOWN_SOURCE_ERROR 1005.
+    Implementazione basata su: alinossier/soundtouch-local-presets (MIT)
+    """
+    _post_avtransport(
+        "SetAVTransportURI",
+        "<InstanceID>0</InstanceID>"
+        f"<CurrentURI>{html.escape(stream_url)}</CurrentURI>"
+        "<CurrentURIMetaData></CurrentURIMetaData>",
     )
-
-    xml = (
-        '<ContentItem '
-        'source="LOCAL_INTERNET_RADIO" '
-        'type="stationurl" '
-        f'location="{html.escape(location, quote=True)}" '
-        'isPresetable="false">'
-        f'<itemName>{html.escape(name)}</itemName>'
-    )
-
-    if favicon:
-
-        xml += (
-            f'<containerArt>'
-            f'{html.escape(favicon)}'
-            f'</containerArt>'
-        )
-
-    xml += "</ContentItem>"
-
-    return bose_post(
-        "/select",
-        xml
+    _post_avtransport(
+        "Play",
+        "<InstanceID>0</InstanceID><Speed>1</Speed>",
     )
 
 
-def store_radio_preset(
-    number,
-    name,
-    stream_url,
-    favicon=""
-):
-
-    if number < 1 or number > 6:
-        raise ValueError("Preset deve essere 1..6")
-
+def play_radio(name, stream_url, favicon=""):
+    """Riproduce uno stream radio sulla Bose via UPnP."""
     if not stream_url:
         raise ValueError("La stazione non ha un URL stream.")
+    resolved = _force_http(resolve_stream_url(stream_url))
+    play_upnp(resolved)
+    return "OK"
 
-    timestamp = int(time.time())
 
-    location = (
-        "http://contentapi.gmuth.de/"
-        "station.php?name="
-        + urllib.parse.quote(name, safe="")
-        + "&streamUrl="
-        + urllib.parse.quote(stream_url, safe="")
-    )
-
-    xml = (
-        f'<preset id="{number}" '
-        f'createdOn="{timestamp}" '
-        f'updatedOn="{timestamp}">'
-        '<ContentItem source="LOCAL_INTERNET_RADIO" '
-        'type="stationurl" '
-        f'location="{html.escape(location, quote=True)}" '
-        'sourceAccount="" '
-        'isPresetable="true">'
-        f'<itemName>{html.escape(name)}</itemName>'
-    )
-
-    if favicon:
-        xml += f'<containerArt>{html.escape(favicon)}</containerArt>'
-
-    xml += "</ContentItem></preset>"
-
-    return bose_post("/storePreset", xml)
+def store_radio_preset(number, name, stream_url, favicon=""):
+    """
+    Salva una stazione come preset virtuale (in memoria).
+    Al click del preset nell'interfaccia web viene riprodotta via UPnP.
+    I preset fisici della Bose non funzionano più post-cloud.
+    """
+    if number < 1 or number > 6:
+        raise ValueError("Preset deve essere 1..6")
+    if not stream_url:
+        raise ValueError("La stazione non ha un URL stream.")
+    resolved = _force_http(resolve_stream_url(stream_url))
+    _save_virtual_preset(number, name, resolved, favicon)
 
 
 # ============================================================
@@ -659,1461 +672,41 @@ def save_favorites(
 # WEB INTERFACE
 # ============================================================
 
-HTML = r"""
-<!DOCTYPE html>
-
-<html lang="it" data-theme="system">
-
-<head>
-
-<meta charset="utf-8">
-
-<meta
-    name="viewport"
-    content="width=device-width,
-             initial-scale=1,
-             viewport-fit=cover"
->
-
-<meta
-    name="apple-mobile-web-app-capable"
-    content="yes"
->
-
-<title>SoundTouch Radio</title>
+def render_template(name):
+    """Legge il file HTML dalla cartella templates/."""
+    path = TEMPLATES_DIR / name
+    if not path.exists():
+        raise FileNotFoundError(f"Template non trovato: {name}")
+    return path.read_bytes()
 
 
-<style>
-
-:root {
-
-    color-scheme: dark;
-
-    --page-bg: #101010;
-    --surface-bg: #1b1b1b;
-    --header-bg: #181818;
-    --control-bg: #292929;
-    --input-bg: #101010;
-    --border: #333;
-    --control-border: #444;
-    --text: #eee;
-    --muted: #aaa;
-    --subtle: #999;
-    --image-bg: #222;
-    --primary-bg: #eee;
-    --primary-text: #111;
-
-    font-family:
-        -apple-system,
-        BlinkMacSystemFont,
-        "Segoe UI",
-        sans-serif;
-}
-
-
-:root[data-theme="light"] {
-
-    color-scheme: light;
-
-    --page-bg: #f5f5f7;
-    --surface-bg: #ffffff;
-    --header-bg: #ffffff;
-    --control-bg: #f0f0f2;
-    --input-bg: #ffffff;
-    --border: #d7d7dc;
-    --control-border: #c6c6cc;
-    --text: #1c1c1e;
-    --muted: #5d5d64;
-    --subtle: #6f6f77;
-    --image-bg: #ececf0;
-    --primary-bg: #1c1c1e;
-    --primary-text: #ffffff;
-}
-
-
-@media (prefers-color-scheme: light) {
-
-    :root[data-theme="system"] {
-
-        color-scheme: light;
-
-        --page-bg: #f5f5f7;
-        --surface-bg: #ffffff;
-        --header-bg: #ffffff;
-        --control-bg: #f0f0f2;
-        --input-bg: #ffffff;
-        --border: #d7d7dc;
-        --control-border: #c6c6cc;
-        --text: #1c1c1e;
-        --muted: #5d5d64;
-        --subtle: #6f6f77;
-        --image-bg: #ececf0;
-        --primary-bg: #1c1c1e;
-        --primary-text: #ffffff;
+def serve_static(filename):
+    """
+    Restituisce (content_type, data) per un file in static/.
+    Lancia FileNotFoundError se il file non esiste.
+    """
+    MIME = {
+        ".css":  "text/css; charset=utf-8",
+        ".js":   "application/javascript; charset=utf-8",
+        ".html": "text/html; charset=utf-8",
+        ".png":  "image/png",
+        ".jpg":  "image/jpeg",
+        ".svg":  "image/svg+xml",
+        ".ico":  "image/x-icon",
+        ".woff2": "font/woff2",
+        ".woff":  "font/woff",
     }
-}
-
-
-* {
-    box-sizing: border-box;
-}
-
-
-body {
-
-    margin: 0;
-
-    background: var(--page-bg);
-
-    color: var(--text);
-}
-
-
-header {
-
-    position: sticky;
-
-    top: 0;
-
-    z-index: 10;
-
-    padding: 15px;
-
-    background: var(--header-bg);
-
-    border-bottom:
-        1px solid var(--border);
-}
-
-
-h1 {
-
-    margin: 0 0 5px;
-
-    font-size: 21px;
-}
-
-
-.status {
-
-    font-size: 13px;
-
-    color: var(--muted);
-}
-
-
-.theme-control {
-
-    display: flex;
-
-    align-items: center;
-
-    gap: 6px;
-
-    margin-top: 10px;
-
-    font-size: 13px;
-
-    color: var(--muted);
-}
-
-
-select {
-
-    font: inherit;
-
-    color: var(--text);
-
-    background: var(--control-bg);
-
-    border: 1px solid var(--control-border);
-
-    border-radius: 8px;
-
-    padding: 5px 8px;
-}
-
-
-main {
-
-    max-width: 900px;
-
-    margin: auto;
-
-    padding: 14px;
-}
-
-
-.card {
-
-    background: var(--surface-bg);
-
-    border:
-        1px solid var(--border);
-
-    border-radius: 16px;
-
-    padding: 14px;
-
-    margin-bottom: 14px;
-}
-
-
-.row {
-
-    display: flex;
-
-    gap: 8px;
-
-    align-items: center;
-
-    flex-wrap: wrap;
-}
-
-
-input,
-button {
-
-    font: inherit;
-}
-
-
-input {
-
-    background: var(--input-bg);
-
-    color: var(--text);
-
-    border:
-        1px solid var(--control-border);
-
-    border-radius: 11px;
-
-    padding: 11px;
-
-    min-width: 0;
-}
-
-
-.searchbox {
-
-    flex: 1;
-
-    min-width: 160px;
-}
-
-
-button {
-
-    background: var(--control-bg);
-
-    color: var(--text);
-
-    border:
-        1px solid var(--control-border);
-
-    border-radius: 11px;
-
-    padding: 10px 13px;
-}
-
-
-button.primary {
-
-    background: var(--primary-bg);
-
-    color: var(--primary-text);
-}
-
-
-button:active {
-
-    transform: scale(.97);
-}
-
-
-.now-title {
-
-    font-size: 18px;
-
-    font-weight: 600;
-}
-
-
-.now-details {
-
-    color: var(--muted);
-
-    font-size: 13px;
-
-    margin-top: 4px;
-}
-
-
-.controls {
-
-    margin-top: 13px;
-}
-
-
-.volume {
-
-    flex: 1;
-
-    min-width: 130px;
-}
-
-
-.station {
-
-    display: flex;
-
-    gap: 10px;
-
-    align-items: center;
-
-    padding: 11px 0;
-
-    border-bottom:
-        1px solid var(--border);
-}
-
-
-.station:last-child {
-
-    border-bottom: none;
-}
-
-
-.station img {
-
-    width: 45px;
-
-    height: 45px;
-
-    object-fit: contain;
-
-    border-radius: 8px;
-
-    background: var(--image-bg);
-}
-
-
-.station-main {
-
-    flex: 1;
-
-    min-width: 0;
-}
-
-
-.station-name {
-
-    font-weight: 600;
-
-    overflow: hidden;
-
-    white-space: nowrap;
-
-    text-overflow: ellipsis;
-}
-
-
-.station-meta {
-
-    color: var(--subtle);
-
-    font-size: 12px;
-
-    margin-top: 3px;
-}
-
-
-.preset {
-
-    flex: 1;
-
-    min-width: 110px;
-}
-
-
-.small {
-
-    color: var(--subtle);
-
-    font-size: 12px;
-
-}
-
-
-.error {
-
-    color: #ff8d8d;
-
-    white-space: pre-wrap;
-}
-
-
-</style>
-
-</head>
-
-
-<body>
-
-
-<header>
-
-<h1>📻 SoundTouch Radio</h1>
-
-<div
-    class="status"
-    id="status"
->
-Connessione...
-</div>
-
-
-<div class="theme-control">
-
-<label for="themeSelect">Tema</label>
-
-<select
-    id="themeSelect"
-    aria-label="Tema dell'interfaccia"
-    onchange="setTheme(this.value)"
->
-    <option value="system">Sistema</option>
-    <option value="light">Light</option>
-    <option value="dark">Dark</option>
-</select>
-
-</div>
-
-</header>
-
-
-<main>
-
-
-<!-- NOW PLAYING -->
-
-<section class="card">
-
-<div
-    class="now-title"
-    id="nowTitle"
->
-—
-</div>
-
-
-<div
-    class="now-details"
-    id="nowDetails"
->
-</div>
-
-
-<div
-    class="row controls"
->
-
-<button onclick="sendKey('PLAY_PAUSE')">
-⏯
-</button>
-
-<button onclick="sendKey('PREV_TRACK')">
-⏮
-</button>
-
-<button onclick="sendKey('NEXT_TRACK')">
-⏭
-</button>
-
-<button onclick="sendKey('MUTE')">
-🔇
-</button>
-
-
-<input
-    class="volume"
-    id="volume"
-    type="range"
-    min="0"
-    max="100"
-    value="0"
-    oninput="changeVolume(this.value)"
->
-
-
-<span id="volumeText">
---
-</span>
-
-</div>
-
-</section>
-
-
-<!-- SEARCH -->
-
-<section class="card">
-
-<div class="row">
-
-<input
-    id="query"
-    class="searchbox"
-    placeholder="Cerca radio..."
-    onkeydown="
-        if(event.key === 'Enter')
-            searchRadio()
-    "
->
-
-
-<button
-    class="primary"
-    onclick="searchRadio()"
->
-Cerca
-</button>
-
-</div>
-
-
-<div
-    class="row"
-    style="margin-top:8px"
->
-
-<input
-    id="country"
-    placeholder="Paese ISO, es. IT"
->
-
-
-<button
-    onclick="loadFavorites()"
->
-⭐ Preferite
-</button>
-
-</div>
-
-</section>
-
-
-<!-- PRESETS -->
-
-<section class="card">
-
-<b>Preset Bose</b>
-
-<div
-    class="row"
-    id="presets"
-    style="margin-top:10px"
->
-</div>
-
-</section>
-
-
-<!-- RESULTS -->
-
-<section class="card">
-
-<div id="results"></div>
-
-<div
-    class="error"
-    id="error"
-></div>
-
-</section>
-
-
-</main>
-
-
-<script>
-
-
-let volumeTimer = null;
-
-
-const THEME_STORAGE_KEY = "soundtouch-radio-theme";
-
-
-function setTheme(theme) {
-
-    const validTheme =
-        ["system", "light", "dark"].includes(theme)
-            ? theme
-            : "system";
-
-
-    document.documentElement.dataset.theme = validTheme;
-
-
-    try {
-
-        localStorage.setItem(
-            THEME_STORAGE_KEY,
-            validTheme
-        );
-
-    }
-
-    catch(error) {
-
-        // La scelta resta attiva anche se il browser blocca localStorage.
-
-    }
-
-}
-
-
-function initializeTheme() {
-
-    let theme = "system";
-
-
-    try {
-
-        theme = localStorage.getItem(
-            THEME_STORAGE_KEY
-        ) || theme;
-
-    }
-
-    catch(error) {
-
-        // Usa il tema di sistema se localStorage non è disponibile.
-
-    }
-
-
-    if(
-        !["system", "light", "dark"].includes(theme)
-    ) {
-
-        theme = "system";
-
-    }
-
-
-    document.documentElement.dataset.theme = theme;
-
-
-    document.getElementById(
-        "themeSelect"
-    ).value = theme;
-
-}
-
-
-async function api(
-    url,
-    options = {}
-) {
-
-    const response =
-        await fetch(
-            url,
-            options
-        );
-
-
-    const text =
-        await response.text();
-
-
-    let data;
-
-
-    try {
-
-        data =
-            JSON.parse(text);
-
-    }
-
-    catch {
-
-        throw new Error(
-            text
-            ||
-            "Risposta non valida"
-        );
-
-    }
-
-
-    if (
-        !response.ok
-        ||
-        data.ok === false
-    ) {
-
-        throw new Error(
-            data.error
-            ||
-            "Errore"
-        );
-
-    }
-
-
-    return data;
-}
-
-
-
-function escapeHtml(value) {
-
-    return String(
-        value ?? ""
-    ).replace(
-        /[&<>"']/g,
-        function(c) {
-
-            return {
-
-                "&": "&amp;",
-                "<": "&lt;",
-                ">": "&gt;",
-                '"': "&quot;",
-                "'": "&#39;"
-
-            }[c];
-
-        }
-    );
-}
-
-
-
-async function refresh() {
-
-    try {
-
-        const data =
-            await api(
-                "/api/status"
-            );
-
-
-        const device =
-            data.device;
-
-
-        document.getElementById(
-            "status"
-        ).textContent =
-            "Bose: "
-            +
-            (
-                device.name
-                ||
-                device.type
-                ||
-                "SoundTouch"
-            )
-            +
-            " · "
-            +
-            device.ip;
-
-
-        const now =
-            data.now;
-
-
-        document.getElementById(
-            "nowTitle"
-        ).textContent =
-
-            now.stationName
-            ||
-            now.name
-            ||
-            now.track
-            ||
-            "Niente in riproduzione";
-
-
-        document.getElementById(
-            "nowDetails"
-        ).textContent =
-
-            [
-                now.artist,
-                now.track,
-                now.album,
-                now.playStatus
-            ]
-            .filter(Boolean)
-            .join(" · ");
-
-
-        document.getElementById(
-            "volume"
-        ).value =
-            data.volume.actual;
-
-
-        document.getElementById(
-            "volumeText"
-        ).textContent =
-            data.volume.actual;
-
-
-        renderPresets(
-            data.presets
-        );
-
-
-        document.getElementById(
-            "error"
-        ).textContent = "";
-
-    }
-
-    catch(error) {
-
-        document.getElementById(
-            "status"
-        ).textContent =
-            "❌ Bose non raggiungibile";
-
-
-        document.getElementById(
-            "error"
-        ).textContent =
-            error.message;
-
-    }
-
-}
-
-
-
-function renderPresets(
-    presets
-) {
-
-    const box =
-        document.getElementById(
-            "presets"
-        );
-
-
-    box.innerHTML = "";
-
-
-    for(
-        let i = 1;
-        i <= 6;
-        i++
-    ) {
-
-        const preset =
-            (
-                presets || []
-            ).find(
-                p => p.id === i
-            );
-
-
-        const button =
-            document.createElement(
-                "button"
-            );
-
-
-        button.className =
-            "preset";
-
-
-        button.textContent =
-
-            i
-            +
-            ": "
-            +
-            (
-                preset
-                ?.name
-                ||
-                "vuoto"
-            );
-
-
-        button.onclick =
-            function() {
-
-                callPreset(i);
-
-            };
-
-
-        box.appendChild(
-            button
-        );
-
-    }
-
-}
-
-
-
-async function callPreset(
-    number
-) {
-
-    try {
-
-        await api(
-            "/api/preset/"
-            +
-            number,
-            {
-                method: "POST"
-            }
-        );
-
-
-        await refresh();
-
-    }
-
-    catch(error) {
-
-        showError(error);
-
-    }
-
-}
-
-
-
-async function sendKey(
-    key
-) {
-
-    try {
-
-        await api(
-            "/api/key/"
-            +
-            encodeURIComponent(
-                key
-            ),
-            {
-                method: "POST"
-            }
-        );
-
-
-        await refresh();
-
-    }
-
-    catch(error) {
-
-        showError(error);
-
-    }
-
-}
-
-
-
-function changeVolume(
-    value
-) {
-
-    document.getElementById(
-        "volumeText"
-    ).textContent =
-        value;
-
-
-    clearTimeout(
-        volumeTimer
-    );
-
-
-    volumeTimer =
-        setTimeout(
-            async function() {
-
-                try {
-
-                    await api(
-                        "/api/volume/"
-                        +
-                        value,
-                        {
-                            method:
-                                "POST"
-                        }
-                    );
-
-                }
-
-                catch(error) {
-
-                    showError(
-                        error
-                    );
-
-                }
-
-            },
-            150
-        );
-
-}
-
-
-
-async function searchRadio() {
-
-    const query =
-        document.getElementById(
-            "query"
-        ).value.trim();
-
-
-    if(!query)
-        return;
-
-
-    const country =
-        document.getElementById(
-            "country"
-        ).value.trim();
-
-
-    try {
-
-        const data =
-            await api(
-                "/api/search?q="
-                +
-                encodeURIComponent(
-                    query
-                )
-                +
-                "&country="
-                +
-                encodeURIComponent(
-                    country
-                )
-            );
-
-
-        renderStations(
-            data.stations
-        );
-
-    }
-
-    catch(error) {
-
-        showError(error);
-
-    }
-
-}
-
-
-
-function renderStations(
-    stations
-) {
-
-    const box =
-        document.getElementById(
-            "results"
-        );
-
-
-    box.innerHTML = "";
-
-
-    if(
-        !stations
-        ||
-        stations.length === 0
-    ) {
-
-        box.textContent =
-            "Nessuna stazione trovata.";
-
-        return;
-
-    }
-
-
-    stations.forEach(
-        function(station) {
-
-            const row =
-                document.createElement(
-                    "div"
-                );
-
-
-            row.className =
-                "station";
-
-
-            const img =
-                station.favicon
-                ||
-                "";
-
-
-            row.innerHTML =
-
-                '<img src="'
-                +
-                escapeHtml(img)
-                +
-                '" onerror="this.style.visibility=\'hidden\'">'
-                +
-
-                '<div class="station-main">'
-                +
-
-                '<div class="station-name">'
-                +
-                escapeHtml(
-                    station.name
-                )
-                +
-                '</div>'
-                +
-
-                '<div class="station-meta">'
-                +
-                escapeHtml(
-                    station.country
-                )
-                +
-                " · "
-                +
-                escapeHtml(
-                    station.codec
-                )
-                +
-                " · "
-                +
-                escapeHtml(
-                    station.bitrate
-                )
-                +
-                " kbps"
-                +
-                '</div>'
-                +
-
-                '</div>';
-
-
-            const play =
-                document.createElement(
-                    "button"
-                );
-
-
-            play.textContent =
-                "▶";
-
-
-            play.onclick =
-                function() {
-
-                    playStation(
-                        station
-                    );
-
-                };
-
-
-            const favorite =
-                document.createElement(
-                    "button"
-                );
-
-
-            favorite.textContent =
-                "⭐";
-
-
-            favorite.onclick =
-                function() {
-
-                    saveFavorite(
-                        station
-                    );
-
-                };
-
-
-            const preset =
-                document.createElement(
-                    "button"
-                );
-
-
-            preset.textContent = "＋";
-            preset.title = "Salva in un preset Bose";
-
-
-            preset.onclick =
-                function() {
-
-                    savePreset(
-                        station
-                    );
-
-                };
-
-
-            row.appendChild(
-                play
-            );
-
-
-            row.appendChild(
-                favorite
-            );
-
-
-            row.appendChild(
-                preset
-            );
-
-
-            box.appendChild(
-                row
-            );
-
-        }
-    );
-
-}
-
-
-
-async function playStation(
-    station
-) {
-
-    try {
-
-        await api(
-            "/api/play",
-            {
-
-                method: "POST",
-
-                headers: {
-                    "Content-Type":
-                        "application/json"
-                },
-
-                body:
-                    JSON.stringify(
-                        station
-                    )
-
-            }
-        );
-
-
-        await refresh();
-
-    }
-
-    catch(error) {
-
-        showError(error);
-
-    }
-
-}
-
-
-async function savePreset(
-    station
-) {
-
-    const answer = window.prompt(
-        "In quale preset vuoi salvare questa radio? (1-6)"
-    );
-
-
-    if(answer === null)
-        return;
-
-
-    const number = Number(answer);
-
-
-    if(
-        !Number.isInteger(number)
-        ||
-        number < 1
-        ||
-        number > 6
-    ) {
-
-        showError(
-            new Error("Inserisci un numero da 1 a 6.")
-        );
-
-        return;
-
-    }
-
-
-    try {
-
-        await api(
-            "/api/preset/"
-            + number
-            + "/store",
-            {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify(station)
-            }
-        );
-
-
-        await refresh();
-
-    }
-
-    catch(error) {
-
-        showError(error);
-
-    }
-
-}
-
-
-
-async function saveFavorite(
-    station
-) {
-
-    try {
-
-        await api(
-            "/api/favorite",
-            {
-
-                method: "POST",
-
-                headers: {
-                    "Content-Type":
-                        "application/json"
-                },
-
-                body:
-                    JSON.stringify(
-                        station
-                    )
-
-            }
-        );
-
-
-        loadFavorites();
-
-    }
-
-    catch(error) {
-
-        showError(error);
-
-    }
-
-}
-
-
-
-async function loadFavorites() {
-
-    try {
-
-        const data =
-            await api(
-                "/api/favorites"
-            );
-
-
-        renderStations(
-            data.favorites
-        );
-
-    }
-
-    catch(error) {
-
-        showError(error);
-
-    }
-
-}
-
-
-
-function showError(
-    error
-) {
-
-    document.getElementById(
-        "error"
-    ).textContent =
-        error.message
-        ||
-        String(error);
-
-}
-
-
-
-initializeTheme();
-
-
-refresh();
-
-
-setInterval(
-    refresh,
-    5000
-);
-
-
-</script>
-
-
-</body>
-
-</html>
-"""
+    path = STATIC_DIR / filename
+    # Blocca path traversal
+    try:
+        path.resolve().relative_to(STATIC_DIR.resolve())
+    except ValueError:
+        raise PermissionError("Accesso negato")
+    if not path.exists() or not path.is_file():
+        raise FileNotFoundError(f"File statico non trovato: {filename}")
+    suffix = path.suffix.lower()
+    content_type = MIME.get(suffix, "application/octet-stream")
+    return content_type, path.read_bytes()
 
 
 # ============================================================
@@ -2214,36 +807,36 @@ class Handler(
 
             if path == "/":
 
-                data = HTML.encode(
-                        "utf-8"
-                    )
+                data = render_template("index.html")
 
-
-                self.send_response(
-                    200
-                )
-
-
-                self.send_header(
-                    "Content-Type",
-                    "text/html; charset=utf-8"
-                )
-
-
-                self.send_header(
-                    "Content-Length",
-                    str(len(data))
-                )
-
-
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
+                self.wfile.write(data)
+                return
 
 
-                self.wfile.write(
-                    data
-                )
+            # ------------------------------------------------
+            # STATIC FILES
+            # ------------------------------------------------
 
+            if path.startswith("/static/"):
 
+                filename = path[len("/static/"):]
+
+                try:
+                    content_type, data = serve_static(filename)
+                except (FileNotFoundError, PermissionError) as exc:
+                    self.send_json({"ok": False, "error": str(exc)}, 404)
+                    return
+
+                self.send_response(200)
+                self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "public, max-age=3600")
+                self.end_headers()
+                self.wfile.write(data)
                 return
 
 
@@ -2254,35 +847,32 @@ class Handler(
             if path == "/api/status":
 
                 info = get_info()
-
-
                 now = get_now_playing()
-
-
                 volume = get_volume()
 
-
-                presets = get_presets()
-
+                # Costruisce la lista preset: merge tra preset Bose reali
+                # e preset virtuali salvati in questa sessione.
+                # I preset virtuali hanno priorità (sovrascrivono quelli Bose
+                # che post-cloud non funzionano più).
+                bose_presets = get_presets()
+                merged = {p["id"]: p for p in bose_presets}
+                with _virtual_presets_lock:
+                    for num, vp in _virtual_presets.items():
+                        merged[num] = {
+                            "id": num,
+                            "name": vp["name"],
+                            "source": "VIRTUAL",
+                            "location": "",
+                        }
+                presets = sorted(merged.values(), key=lambda p: p["id"])
 
                 self.send_json({
-
                     "ok": True,
-
-                    "device":
-                        info,
-
-                    "now":
-                        now,
-
-                    "volume":
-                        volume,
-
-                    "presets":
-                        presets
-
+                    "device": info,
+                    "now": now,
+                    "volume": volume,
+                    "presets": presets,
                 })
-
 
                 return
 
@@ -2456,51 +1046,58 @@ class Handler(
 
                 number = int(parts[3])
 
-
                 if number < 1 or number > 6:
-
-                    raise ValueError(
-                        "Preset deve essere 1..6"
-                    )
-
+                    raise ValueError("Preset deve essere 1..6")
 
                 action = parts[4] if len(parts) == 5 else "play"
 
                 if action == "store":
-
-                    if not is_source_ready("LOCAL_INTERNET_RADIO"):
-                        raise ValueError(
-                            "Internet Radio non è disponibile sulla Bose."
-                        )
-
                     station = self.read_json()
+                    name = station.get("name", "Radio")
+                    stream = (
+                        station.get("stream")
+                        or station.get("url_resolved")
+                        or station.get("url", "")
+                    )
+                    favicon = station.get("favicon", "")
+
+                    if not stream:
+                        raise ValueError("La stazione non ha uno stream valido.")
 
                     store_radio_preset(
                         number,
-                        station.get("name", "Radio"),
-                        station.get("stream", ""),
-                        station.get("favicon", "")
+                        name,
+                        stream,
+                        favicon
                     )
 
                 elif action == "remove":
-
                     bose_post(
                         "/removePreset",
                         f'<preset id="{number}"/>'
                     )
 
                 elif action == "play":
-
-                    press_key(f"PRESET_{number}")
+                    # Prima controlla se abbiamo un preset virtuale salvato
+                    # in questa sessione (stream salvato via questa app)
+                    virtual = get_virtual_preset(number)
+                    if virtual:
+                        play_upnp(virtual["stream_url"])
+                    else:
+                        # Nessun preset virtuale: prova il tasto fisico.
+                        # Post-cloud i preset fisici TuneIn non funzionano più,
+                        # ma non possiamo fare altro — ignoriamo l'errore.
+                        try:
+                            press_key(f"PRESET_{number}")
+                        except Exception:
+                            pass
 
                 else:
                     raise ValueError("Azione preset non valida")
 
-
                 self.send_json({
                     "ok": True
                 })
-
 
                 return
 
@@ -2511,55 +1108,28 @@ class Handler(
 
             if path == "/api/play":
 
-                if not is_source_ready(
-                    "LOCAL_INTERNET_RADIO"
-                ):
-
-                    self.send_json(
-                        {
-                            "ok": False,
-                            "error": (
-                                "La sorgente Internet Radio non è "
-                                "disponibile sulla Bose. Riattivala "
-                                "sul dispositivo prima di avviare "
-                                "una stazione."
-                            )
-                        },
-                        409
-                    )
-
-                    return
-
                 station = self.read_json()
 
-
                 name = station.get(
-                        "name",
-                        "Radio"
-                    )
-
+                    "name",
+                    "Radio"
+                )
 
                 favicon = station.get(
-                        "favicon",
-                        ""
-                    )
-
+                    "favicon",
+                    ""
+                )
 
                 stream = (
                     station.get("stream")
-                    or
-                    station.get("url_resolved")
-                    or
-                    station.get("url")
+                    or station.get("url_resolved")
+                    or station.get("url")
                 )
 
-
                 if not stream:
-
                     raise ValueError(
                         "La stazione non ha uno stream."
                     )
-
 
                 play_radio(
                     name,
@@ -2567,11 +1137,9 @@ class Handler(
                     favicon
                 )
 
-
                 self.send_json({
                     "ok": True
                 })
-
 
                 return
 
@@ -2584,67 +1152,48 @@ class Handler(
 
                 station = self.read_json()
 
+                stream = (
+                    station.get("stream")
+                    or station.get("url_resolved")
+                    or station.get("url")
+                )
 
-                if not station.get(
-                    "stream"
-                ):
-
+                if not stream:
                     raise ValueError(
                         "Stream mancante."
                     )
 
+                station["stream"] = stream
 
                 favorites = load_favorites()
 
-
                 station_id = (
-                        station.get(
-                            "id"
-                        )
-                        or
-                        station.get(
-                            "stream"
-                        )
-                    )
-
+                    station.get("id")
+                    or stream
+                )
 
                 favorites = [
-
                     item
-
                     for item in favorites
-
                     if (
                         item.get("id")
-                        or
-                        item.get("stream")
-                    )
-                    !=
-                    station_id
-
+                        or item.get("stream")
+                    ) != station_id
                 ]
-
 
                 favorites.insert(
                     0,
                     station
                 )
 
-
                 save_favorites(
                     favorites[:100]
                 )
 
-
                 self.send_json({
-
                     "ok": True,
-
-                    "favorites":
-                        favorites[:100]
-
+                    "favorites": favorites[:100]
                 })
-
 
                 return
 
@@ -2660,18 +1209,29 @@ class Handler(
 
         except urllib.error.HTTPError as error:
 
+            body = ""
+            try:
+                body = error.read().decode("utf-8", "replace")
+            except Exception:
+                pass
+
+            print(f"[BOSE HTTP ERROR] {error.code} {error.reason}: {body[:300]}")
+
             self.send_json(
                 {
                     "ok": False,
                     "error":
-                        f"HTTP {error.code}: "
-                        f"{error.reason}"
+                        f"Bose HTTP {error.code}: {error.reason}"
+                        + (f" — {body[:200]}" if body else "")
                 },
                 502
             )
 
 
         except Exception as error:
+
+            import traceback
+            print(f"[ERROR] {traceback.format_exc()}")
 
             self.send_json(
                 {
