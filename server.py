@@ -184,6 +184,24 @@ def get_info():
 
 
 # ============================================================
+# BOSE SOURCES
+# ============================================================
+
+def is_source_ready(source):
+
+    xml = bose_get("/sources")
+
+    root = ET.fromstring(xml)
+
+    return any(
+        item.attrib.get("source") == source
+        and
+        item.attrib.get("status") == "READY"
+        for item in root.findall("sourceItem")
+    )
+
+
+# ============================================================
 # NOW PLAYING
 # ============================================================
 
@@ -2367,6 +2385,25 @@ class Handler(
             # ------------------------------------------------
 
             if path == "/api/play":
+
+                if not is_source_ready(
+                    "LOCAL_INTERNET_RADIO"
+                ):
+
+                    self.send_json(
+                        {
+                            "ok": False,
+                            "error": (
+                                "La sorgente Internet Radio non è "
+                                "disponibile sulla Bose. Riattivala "
+                                "sul dispositivo prima di avviare "
+                                "una stazione."
+                            )
+                        },
+                        409
+                    )
+
+                    return
 
                 station = self.read_json()
 

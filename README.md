@@ -69,6 +69,12 @@ Per interrompere il server premi `Ctrl+C`.
 | `SERVER_PORT` | Porta dell'interfaccia web | `8765` |
 | `RADIO_BROWSER_HOST` | Endpoint dell'API Radio Browser | `https://de1.api.radio-browser.info` |
 
+## Compatibilità Internet Radio
+
+La riproduzione delle stazioni richiede che il diffusore esponga la sorgente `LOCAL_INTERNET_RADIO` con stato `READY` nell'endpoint SoundTouch `/sources`. Su dispositivi nei quali la sorgente non è disponibile, la ricerca delle radio continua a funzionare, ma la Bose non può avviarne la riproduzione tramite questa interfaccia.
+
+L'app rileva il caso e mostra un messaggio esplicativo. La sorgente deve essere riattivata o configurata sul dispositivo prima di poter riprodurre radio online.
+
 ## Privacy e sicurezza
 
 Il server non implementa autenticazione: usalo solo su una rete fidata e non esporre la porta su Internet. I file `config.cfg` e `favorites.json`, che possono contenere dati personali della tua rete e delle tue preferenze, sono esclusi da Git per impostazione predefinita.
