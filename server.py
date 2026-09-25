@@ -5,6 +5,7 @@
 
 import html
 import json
+import re
 import threading
 import time
 import traceback
@@ -20,17 +21,19 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 # CONFIG
 # ============================================================
 
-BASE_DIR      = Path(__file__).resolve().parent
-CONFIG_FILE   = BASE_DIR / "config.cfg"
-FAVORITES_FILE = BASE_DIR / "favorites.json"
-TEMPLATES_DIR = BASE_DIR / "templates"
-STATIC_DIR    = BASE_DIR / "static"
+BASE_DIR        = Path(__file__).resolve().parent
+CONFIG_FILE     = BASE_DIR / "config.cfg"
+FAVORITES_FILE  = BASE_DIR / "favorites.json"
+PRESETS_FILE    = BASE_DIR / "presets.json"
+TEMPLATES_DIR   = BASE_DIR / "templates"
+STATIC_DIR      = BASE_DIR / "static"
 
 DEFAULT_CONFIG = {
     "BOSE_IP":            "192.168.1.52",
     "SERVER_HOST":        "0.0.0.0",
     "SERVER_PORT":        "8765",
     "RADIO_BROWSER_HOST": "https://de1.api.radio-browser.info",
+    "debug_icy":          "false",
 }
 
 
@@ -51,6 +54,7 @@ BOSE_IP          = CONFIG["BOSE_IP"]
 SERVER_HOST      = CONFIG["SERVER_HOST"]
 SERVER_PORT      = int(CONFIG["SERVER_PORT"])
 RADIO_BROWSER_HOST = CONFIG["RADIO_BROWSER_HOST"].rstrip("/")
+debug_icy = str(CONFIG.get("debug_icy", "false")).strip().lower() in {"1", "true", "yes", "on"}
 
 
 # ============================================================
@@ -193,11 +197,51 @@ def get_presets():
 
 _virtual_presets      = {}
 _virtual_presets_lock = threading.Lock()
+_now_playing          = {}          # {"name": ..., "stream": ...}
+_now_playing_lock     = threading.Lock()
+
+
+def _set_now_playing(name, stream_url="", favicon=""):
+    with _now_playing_lock:
+        _now_playing["name"]    = name
+        _now_playing["stream"]  = stream_url
+        _now_playing["favicon"] = favicon
+
+def _get_now_playing_cache():
+    with _now_playing_lock:
+        return dict(_now_playing)
+
+
+def _load_virtual_presets():
+    """Carica i preset virtuali dal file JSON all'avvio."""
+    if not PRESETS_FILE.exists():
+        return
+    try:
+        data = json.loads(PRESETS_FILE.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            with _virtual_presets_lock:
+                for k, v in data.items():
+                    _virtual_presets[int(k)] = v
+    except Exception as exc:
+        print(f"[WARN] Impossibile caricare i preset virtuali: {exc}")
+
+
+def _persist_virtual_presets():
+    """Salva i preset virtuali su file JSON (chiamato con il lock già acquisito)."""
+    try:
+        PRESETS_FILE.write_text(
+            json.dumps({str(k): v for k, v in _virtual_presets.items()},
+                       ensure_ascii=False, indent=2),
+            encoding="utf-8"
+        )
+    except Exception as exc:
+        print(f"[WARN] Impossibile salvare i preset virtuali: {exc}")
 
 
 def _save_virtual_preset(number, name, stream_url, favicon=""):
     with _virtual_presets_lock:
         _virtual_presets[number] = {"name": name, "stream_url": stream_url, "favicon": favicon}
+        _persist_virtual_presets()
 
 def get_virtual_preset(number):
     with _virtual_presets_lock:
@@ -221,6 +265,129 @@ def resolve_stream_url(url):
         except Exception:
             pass
     return url
+
+def _looks_like_stream_id(value):
+    """Riconosce id/UUID/hex lunghi che non sono titoli di canzone."""
+    if not value:
+        return False
+    value = value.strip()
+    if not value:
+        return False
+    if re.fullmatch(r"[0-9a-fA-F]{8,64}", value):
+        return True
+    if re.fullmatch(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){1,8}", value):
+        return True
+    if re.fullmatch(r"[0-9a-fA-F]{8,}(?:[-*_][0-9a-fA-F]{8,}){1,8}", value):
+        return True
+    return False
+
+
+def _is_generic_title(value):
+    if not value:
+        return True
+    value = value.strip()
+    if not value:
+        return True
+    if _looks_like_stream_id(value):
+        return True
+    if re.fullmatch(r"\d{4}", value):
+        return True
+    lower = value.lower()
+    if lower in {"link", "song", "track", "title", "artist", "radio", "stream", "live", "attualita", "news", "niente in riproduzione", "now playing", "unknown"}:
+        return True
+    return False
+
+
+def _parse_icy_title(raw_title):
+    """Ritorna il titolo ICY grezzo, senza interpretare artist/title. Rimuove solo UUID e valori generici palesi."""
+    if not raw_title:
+        return ""
+
+    title = raw_title.strip().replace("\x00", "")
+
+    match = re.search(r"(?is)streamtitle\s*=\s*(.*)$", title)
+    if match:
+        title = match.group(1)
+
+    title = title.split(";", 1)[0].strip()
+    title = title.strip("'\"")
+
+    for sep in ("~", "|"):
+        if sep in title:
+            title = title.split(sep, 1)[0].strip()
+
+    if title:
+        uuid_match = re.search(r"\s*[-–—]\s*([0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12})\s*$", title)
+        if uuid_match:
+            title = title[:uuid_match.start()].strip(" -")
+
+    title = re.sub(r"\s+", " ", title).strip(" -")
+
+    if not title:
+        return ""
+    if _is_generic_title(title):
+        return ""
+
+    return title
+
+
+def _get_icy_metadata(stream_url, timeout=4):
+    """Legge i metadati ICY (titolo brano) dallo stream radio."""
+    if not stream_url:
+        return ""
+    try:
+        req = urllib.request.Request(
+            stream_url,
+            headers={"Icy-MetaData": "1", "User-Agent": "SoundTouchRadio/1.0"}
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            metaint_str = resp.headers.get("icy-metaint", "")
+            if not metaint_str:
+                return ""
+            metaint = int(metaint_str)
+            resp.read(metaint)
+            meta_len_byte = resp.read(1)
+            if not meta_len_byte:
+                return ""
+            meta_len = meta_len_byte[0] * 16
+            if meta_len == 0:
+                return ""
+            meta_raw = resp.read(meta_len).decode("utf-8", "ignore").rstrip("\x00")
+            for part in meta_raw.split(";"):
+                part = part.strip()
+                if part.lower().startswith("streamtitle="):
+                    title = part.split("=", 1)[1].strip()
+                    return _parse_icy_title(title)
+    except Exception:
+        pass
+    return ""
+
+
+# Cache ICY aggiornata in background
+_icy_cache      = {"title": "", "stream": ""}
+_icy_cache_lock = threading.Lock()
+
+def _icy_updater():
+    """Thread che aggiorna i metadati ICY ogni 10 secondi solo quando cambiano."""
+    while True:
+        time.sleep(10)
+        with _icy_cache_lock:
+            stream = _icy_cache.get("stream", "")
+        if stream:
+            title = _get_icy_metadata(stream)
+            with _icy_cache_lock:
+                if _icy_cache.get("stream") == stream and _icy_cache.get("title") != title:
+                    _icy_cache["title"] = title
+
+def _set_icy_stream(stream_url):
+    with _icy_cache_lock:
+        if _icy_cache.get("stream") != stream_url:
+            _icy_cache["stream"] = stream_url
+            _icy_cache["title"]  = ""  # reset al cambio stazione
+
+def _get_icy_title():
+    with _icy_cache_lock:
+        return _icy_cache.get("title", "")
 
 def _force_http(url):
     """La Bose SoundTouch non supporta HTTPS per UPnP."""
@@ -262,7 +429,10 @@ def play_upnp(stream_url):
 def play_radio(name, stream_url, favicon=""):
     if not stream_url:
         raise ValueError("La stazione non ha un URL stream.")
-    play_upnp(_force_http(resolve_stream_url(stream_url)))
+    resolved = _force_http(resolve_stream_url(stream_url))
+    play_upnp(resolved)
+    _set_now_playing(name, resolved, favicon)
+    _set_icy_stream(resolved)
     return "OK"
 
 def store_radio_preset(number, name, stream_url, favicon=""):
@@ -349,10 +519,22 @@ MIME_TYPES = {
     ".woff":  "font/woff",
 }
 
+
+def debug_dump_json(filename, data):
+    try:
+        path = Path(filename)
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        pass
+
+
 def render_template(name):
     path = TEMPLATES_DIR / name
     if not path.exists():
         raise FileNotFoundError(f"Template non trovato: {name}")
+    if name == "index.html":
+        html = path.read_text(encoding="utf-8")
+        return html.replace("__APP_DEBUG__", "true" if debug_icy else "false").encode("utf-8")
     return path.read_bytes()
 
 def serve_static(filename):
@@ -413,7 +595,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_response(200)
                 self.send_header("Content-Type", ct)
                 self.send_header("Content-Length", str(len(data)))
-                self.send_header("Cache-Control", "public, max-age=3600")
+                self.send_header("Cache-Control", "no-cache")
                 self.end_headers()
                 self.wfile.write(data)
                 return
@@ -423,6 +605,15 @@ class Handler(BaseHTTPRequestHandler):
                 info   = get_info()
                 now    = get_now_playing()
                 volume = get_volume()
+                # Se la Bose non restituisce metadati (UPnP), usa la cache locale
+                cached = _get_now_playing_cache()
+                if not (now.get("stationName") or now.get("name") or now.get("track")):
+                    if cached.get("name"):
+                        now["stationName"] = cached["name"]
+                # Favicon dalla cache
+                now["favicon"] = cached.get("favicon", "")
+                # Metadati ICY dalla cache background (non blocca il refresh)
+                now["icyTitle"] = _get_icy_title()
                 # Merge preset Bose + preset virtuali (i virtuali hanno priorità)
                 merged = {p["id"]: p for p in get_presets()}
                 with _virtual_presets_lock:
@@ -500,6 +691,8 @@ class Handler(BaseHTTPRequestHandler):
                     virtual = get_virtual_preset(number)
                     if virtual:
                         play_upnp(virtual["stream_url"])
+                        _set_now_playing(virtual["name"], virtual["stream_url"], virtual.get("favicon", ""))
+                        _set_icy_stream(virtual["stream_url"])
                     else:
                         # Preset fisico Bose (post-cloud può non funzionare)
                         try:
@@ -516,6 +709,7 @@ class Handler(BaseHTTPRequestHandler):
             # Play
             if path == "/api/play":
                 s      = self.read_json()
+                debug_dump_json(BASE_DIR / "debug_play_payload.json", s)
                 stream = s.get("stream") or s.get("url_resolved") or s.get("url")
                 if not stream:
                     raise ValueError("La stazione non ha uno stream.")
@@ -523,7 +717,19 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True})
                 return
 
-            # Favorite
+            # Favorite – rimozione
+            if path == "/api/favorite/remove":
+                s          = self.read_json()
+                station_id = s.get("id") or s.get("stream")
+                if not station_id:
+                    raise ValueError("ID stazione mancante.")
+                favorites = [f for f in load_favorites()
+                             if (f.get("id") or f.get("stream")) != station_id]
+                save_favorites(favorites)
+                self.send_json({"ok": True, "favorites": favorites})
+                return
+
+            # Favorite – aggiunta
             if path == "/api/favorite":
                 s      = self.read_json()
                 stream = s.get("stream") or s.get("url_resolved") or s.get("url")
@@ -557,6 +763,30 @@ class Handler(BaseHTTPRequestHandler):
             print(f"[ERROR] {traceback.format_exc()}")
             self.send_json({"ok": False, "error": str(exc)}, 500)
 
+    # ── DELETE ───────────────────────────────────────────────
+
+    def do_DELETE(self):
+        try:
+            parsed = urllib.parse.urlsplit(self.path)
+            path   = parsed.path
+
+            # DELETE /api/favorite/<id_or_stream>
+            if path.startswith("/api/favorite/"):
+                station_id = urllib.parse.unquote(path[len("/api/favorite/"):])
+                if not station_id:
+                    raise ValueError("ID stazione mancante.")
+                favorites = [f for f in load_favorites()
+                             if (f.get("id") or f.get("stream")) != station_id]
+                save_favorites(favorites)
+                self.send_json({"ok": True, "favorites": favorites})
+                return
+
+            self.send_json({"ok": False, "error": "Not found"}, 404)
+
+        except Exception as exc:
+            print(f"[ERROR] {traceback.format_exc()}")
+            self.send_json({"ok": False, "error": str(exc)}, 500)
+
     def log_message(self, fmt, *args):
         print(f"[HTTP] {self.address_string()} - {fmt % args}")
 
@@ -566,9 +796,13 @@ class Handler(BaseHTTPRequestHandler):
 # ============================================================
 
 if __name__ == "__main__":
+    _load_virtual_presets()
+    # Avvia thread aggiornamento metadati ICY in background
+    icy_thread = threading.Thread(target=_icy_updater, daemon=True)
+    icy_thread.start()
     print()
     print("======================================")
-    print("       SOUNDTOUCH RADIO")
+    print("       SOUNDTOUCH BS")
     print("======================================")
     print(f"Bose: http://{BOSE_IP}:8090")
     print(f"Web : http://<IP-PC>:{SERVER_PORT}")

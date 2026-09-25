@@ -126,6 +126,23 @@ Per interrompere: `Ctrl+C`.
 | `SERVER_PORT` | Porta dell'interfaccia web | `8765` |
 | `RADIO_BROWSER_HOST` | Endpoint dell'API Radio Browser | `https://de1.api.radio-browser.info` |
 
+## Debug metadati ICY
+
+Il frontend include un pannello di debug opzionale per verificare i metadati ricevuti dalla Bose e dallo stream radio in tempo reale.
+
+- Il flag di configurazione si legge da `config.cfg` con la chiave `debug_icy`.
+- Il template HTML lo usa in [templates/index.html](templates/index.html).
+- Il pannello è mostrato/hidden da [static/app.js](static/app.js).
+- Lo stile del box di debug è in [static/style.css](static/style.css).
+
+Esempio in `config.cfg`:
+
+```ini
+debug_icy=true
+```
+
+Quando il debug è spento, il pannello rimane nascosto e non lascia file o log inutili nel repository.
+
 ---
 
 ## Note sugli stream

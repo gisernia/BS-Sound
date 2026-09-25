@@ -1,11 +1,13 @@
 /* ============================================================
-   SoundTouch Radio – client-side JS
+   SoundTouch BS – client-side JS
    ============================================================ */
 
-let volumeTimer = null;
+let volumeTimer    = null;
 let currentPresetsData = [];
 let targetStationForPreset = null;
+let favoritesSet   = new Set(); // ID delle stazioni già nei preferiti
 
+const DEBUG = !!(window.APP_DEBUG === true);
 const THEME_STORAGE_KEY = "soundtouch-radio-theme";
 
 // ── Theme ────────────────────────────────────────────────────
@@ -44,6 +46,50 @@ function escapeHtml(value) {
 
 // ── Status / refresh ─────────────────────────────────────────
 
+let lastTickerText = "";
+
+function normalizeText(value) {
+    const text = String(value || "").replace(/\s+/g, " ").trim();
+    return text || "";
+}
+
+function isGenericTickerValue(value) {
+    const normalized = normalizeText(value).toLowerCase();
+    if (!normalized) return true;
+    return [
+        "song",
+        "track",
+        "link",
+        "unknown",
+        "radio",
+        "stream",
+        "live",
+        "now playing",
+        "niente in riproduzione"
+    ].includes(normalized);
+}
+
+function getTickerText(now) {
+    const station = normalizeText(now.stationName || now.name);
+    const artist = normalizeText(now.artist);
+    const track = normalizeText(now.track);
+    const icy = normalizeText(now.icyTitle);
+
+    if (artist && track && !isGenericTickerValue(artist) && !isGenericTickerValue(track)) {
+        return artist + " - " + track;
+    }
+    if (artist && !isGenericTickerValue(artist) && artist !== station) {
+        return artist;
+    }
+    if (track && !isGenericTickerValue(track) && track !== station) {
+        return track;
+    }
+    if (icy && !isGenericTickerValue(icy) && icy !== station) {
+        return icy;
+    }
+    return station || "";
+}
+
 async function refresh() {
     try {
         const data = await api("/api/status");
@@ -53,11 +99,51 @@ async function refresh() {
             "Bose: " + (device.name || device.type || "SoundTouch") + " · " + device.ip;
 
         const now = data.now;
-        document.getElementById("nowTitle").textContent =
-            now.stationName || now.name || now.track || "Niente in riproduzione";
+        const stationName = normalizeText(now.stationName || now.name || now.track || "");
+        const details = [normalizeText(now.artist), normalizeText(now.album)].filter(Boolean).join(" · ");
+        const tickerText = getTickerText(now);
+        const favicon = now.favicon || "";
 
-        document.getElementById("nowDetails").textContent =
-            [now.artist, now.track, now.album, now.playStatus].filter(Boolean).join(" · ");
+        if (DEBUG) {
+            const debugPanel = document.getElementById("debugPanel");
+            const debugMeta = document.getElementById("debugMeta");
+            if (debugPanel && debugMeta) {
+                debugPanel.hidden = false;
+                debugMeta.textContent = JSON.stringify({
+                    timestamp: new Date().toISOString(),
+                    device: data.device,
+                    now: now,
+                    volume: data.volume,
+                    presets: data.presets
+                }, null, 2);
+            }
+        } else {
+            const debugPanel = document.getElementById("debugPanel");
+            if (debugPanel) debugPanel.hidden = true;
+        }
+
+        document.getElementById("nowTitle").textContent = stationName || "";
+        document.getElementById("nowDetails").textContent = details || "";
+
+        const icyEl = document.getElementById("nowIcy");
+        if (tickerText && tickerText !== lastTickerText) {
+            const escaped = escapeHtml(tickerText);
+            icyEl.innerHTML = '<div class="ticker-wrap"><div class="ticker-track"><span class="ticker-text">' + escaped + '</span></div></div>';
+            lastTickerText = tickerText;
+        } else if (!tickerText) {
+            icyEl.innerHTML = "";
+            lastTickerText = "";
+        }
+
+        // Favicon radio
+        const faviconEl = document.getElementById("nowFavicon");
+        if (favicon) {
+            faviconEl.src = favicon;
+            faviconEl.style.display = "block";
+            faviconEl.onerror = () => { faviconEl.style.display = "none"; };
+        } else {
+            faviconEl.style.display = "none";
+        }
 
         document.getElementById("volume").value = data.volume.actual;
         document.getElementById("volumeText").textContent = data.volume.actual;
@@ -128,14 +214,14 @@ async function searchRadio() {
     } catch (error) { showError(error); }
 }
 
-// ── Station list ─────────────────────────────────────────────
+// ── Station list (risultati ricerca) ─────────────────────────
 
 function renderStations(stations) {
     const box = document.getElementById("results");
     box.innerHTML = "";
 
     if (!stations || stations.length === 0) {
-        box.textContent = "Nessuna stazione trovata.";
+        box.innerHTML = '<div style="color:var(--muted)">Nessuna stazione trovata.</div>';
         return;
     }
 
@@ -158,19 +244,23 @@ function renderStations(stations) {
         const btnPlay = document.createElement("button");
         btnPlay.textContent = "▶";
         btnPlay.onclick = () => playStation(station);
+        row.appendChild(btnPlay);
 
+        const stationId = station.id || station.stream || "";
+        const isFav = favoritesSet.has(stationId);
         const btnFav = document.createElement("button");
-        btnFav.textContent = "⭐";
-        btnFav.onclick = () => saveFavorite(station);
+        btnFav.className = "btn-star" + (isFav ? " btn-star--fav" : "");
+        btnFav.title = isFav ? "Rimuovi dai preferiti" : "Aggiungi ai preferiti";
+        btnFav.innerHTML = isFav ? '<span class="star-cancel">★</span>' : "☆";
+        btnFav.onclick = () => isFav ? confirmRemoveFavorite(station) : saveFavorite(station);
+        row.appendChild(btnFav);
 
         const btnPreset = document.createElement("button");
         btnPreset.textContent = "＋";
         btnPreset.title = "Salva in un preset Bose";
         btnPreset.onclick = () => savePreset(station);
-
-        row.appendChild(btnPlay);
-        row.appendChild(btnFav);
         row.appendChild(btnPreset);
+
         box.appendChild(row);
     });
 }
@@ -246,6 +336,67 @@ async function savePreset(station) {
 
 // ── Favorites ────────────────────────────────────────────────
 
+async function loadFavorites() {
+    const box = document.getElementById("favorites");
+    try {
+        const response = await fetch("/api/favorites");
+        const text = await response.text();
+        let data;
+        try { data = JSON.parse(text); } catch(e) {
+            box.innerHTML = '<div style="color:red">JSON parse error: ' + escapeHtml(text.slice(0,200)) + '</div>';
+            return;
+        }
+        if (!data.ok) {
+            box.innerHTML = '<div style="color:red">API error: ' + escapeHtml(data.error || '?') + '</div>';
+            return;
+        }
+        const favs = data.favorites || [];
+
+        // aggiorna il set
+        favoritesSet = new Set(favs.map(f => f.id || f.stream || ""));
+
+        if (favs.length === 0) {
+            box.innerHTML = '<div style="color:var(--muted); font-size:13px; padding:8px 0;">Nessun preferito salvato.</div>';
+            return;
+        }
+
+        box.innerHTML = "";
+        favs.forEach(station => {
+            const row = document.createElement("div");
+            row.className = "station";
+            row.innerHTML =
+                '<img src="' + escapeHtml(station.favicon || "") +
+                '" onerror="this.style.visibility=\'hidden\'">' +
+                '<div class="station-main">' +
+                  '<div class="station-name">' + escapeHtml(station.name) + '</div>' +
+                  '<div class="station-meta">' + escapeHtml(station.country || "") + '</div>' +
+                '</div>';
+
+            const btnPlay = document.createElement("button");
+            btnPlay.textContent = "▶";
+            btnPlay.onclick = () => playStation(station);
+            row.appendChild(btnPlay);
+
+            const btnDel = document.createElement("button");
+            btnDel.className = "btn-star btn-star--fav";
+            btnDel.title = "Rimuovi dai preferiti";
+            btnDel.innerHTML = '<span class="star-cancel">★</span>';
+            btnDel.onclick = () => confirmRemoveFavorite(station);
+            row.appendChild(btnDel);
+
+            const btnPreset = document.createElement("button");
+            btnPreset.textContent = "＋";
+            btnPreset.title = "Salva in un preset Bose";
+            btnPreset.onclick = () => savePreset(station);
+            row.appendChild(btnPreset);
+
+            box.appendChild(row);
+        });
+    } catch (error) {
+        box.innerHTML = '<div style="color:red">Fetch error: ' + escapeHtml(String(error)) + '</div>';
+    }
+}
+
 async function saveFavorite(station) {
     try {
         const payload = Object.assign({}, station);
@@ -255,15 +406,29 @@ async function saveFavorite(station) {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload)
         });
-        loadFavorites();
+        await loadFavorites();
+        // ridisegna la lista risultati per aggiornare le stelle
+        const lastQuery = document.getElementById("query").value.trim();
+        if (lastQuery) searchRadio();
     } catch (error) { showError(error); }
 }
 
-async function loadFavorites() {
-    try {
-        const data = await api("/api/favorites");
-        renderStations(data.favorites);
-    } catch (error) { showError(error); }
+function confirmRemoveFavorite(station) {
+    document.getElementById("removeFavName").textContent = station.name || "questa stazione";
+    document.getElementById("removeFavModal").style.display = "flex";
+    document.getElementById("removeFavConfirm").onclick = async () => {
+        document.getElementById("removeFavModal").style.display = "none";
+        try {
+            await api("/api/favorite/remove", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ id: station.id, stream: station.stream || station.url_resolved || station.url })
+            });
+            await loadFavorites();
+            const lastQuery = document.getElementById("query").value.trim();
+            if (lastQuery) searchRadio();
+        } catch (error) { showError(error); }
+    };
 }
 
 // ── Utils ─────────────────────────────────────────────────────
@@ -275,5 +440,6 @@ function showError(error) {
 // ── Init ──────────────────────────────────────────────────────
 
 initializeTheme();
+loadFavorites();
 refresh();
 setInterval(refresh, 5000);
