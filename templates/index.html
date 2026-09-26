@@ -15,78 +15,133 @@
       <h1>📻 SoundTouch BS</h1>
       <div class="status" id="status">Connessione...</div>
     </div>
-    <div class="theme-control">
-      <label for="themeSelect">Tema</label>
-      <select id="themeSelect" aria-label="Tema" onchange="setTheme(this.value)">
-        <option value="system">Sistema</option>
-        <option value="light">Light</option>
-        <option value="dark">Dark</option>
-      </select>
+
+    <div class="header-actions">
+      <nav class="main-nav" aria-label="Sezioni principali">
+        <button type="button" class="nav-tab" data-view="home">Home</button>
+        <button type="button" class="nav-tab active" data-view="radio">Radio</button>
+        <button type="button" class="nav-tab" data-view="spotify">Spotify</button>
+      </nav>
+
+      <div class="theme-control">
+        <button id="themeToggle" class="theme-toggle" type="button" aria-label="Cambia tema" title="Cambia tema">🌙</button>
+      </div>
     </div>
   </div>
 </header>
 
 <main>
 
-  <!-- ROW 1: Now Playing + Preset Bose -->
-  <div class="grid-top">
+  <section id="view-home" class="app-view" hidden>
+    <div class="home-grid">
+      <button type="button" class="card home-widget" data-open-view="radio">
+        <div class="widget-label">Radio</div>
+        <div class="home-widget-title">Ascolta le stazioni</div>
+        <div class="home-widget-copy">Cerca radio, salva preferiti e usa i preset Bose.</div>
+        <span class="widget-cta">Apri Radio →</span>
+      </button>
 
-    <section class="card widget-now">
-      <div class="widget-label">In riproduzione</div>
-      <img id="nowFavicon" src="" alt="" style="display:none; position:absolute; top:14px; right:14px; width:44px; height:44px; object-fit:contain; border-radius:8px; background:var(--image-bg);">
-      <div class="now-title" id="nowTitle">—</div>
-      <div class="now-details" id="nowDetails"></div>
-      <div class="now-icy" id="nowIcy"></div>
-      <div class="controls">
-        <button onclick="sendKey('PLAY_PAUSE')">⏯</button>
-        <button onclick="sendKey('PREV_TRACK')">⏮</button>
-        <button onclick="sendKey('NEXT_TRACK')">⏭</button>
-        <button onclick="sendKey('MUTE')">🔇</button>
-        <input class="volume" id="volume" type="range" min="0" max="100" value="0" oninput="changeVolume(this.value)">
-        <span id="volumeText" class="vol-text">--</span>
+      <button type="button" class="card home-widget" data-open-view="spotify">
+        <div class="widget-label">Spotify</div>
+        <div class="home-widget-title">Spotify</div>
+        <div class="home-widget-copy">Qui troverai la tua libreria e i contenuti dedicati.</div>
+        <span class="widget-cta">Apri Spotify →</span>
+      </button>
+
+      <button type="button" class="card home-widget home-widget--wide" data-open-view="radio">
+        <div class="widget-label">In riproduzione</div>
+        <div class="home-widget-title" id="homeNowTitle">—</div>
+        <div class="home-widget-copy" id="homeNowDetails">Nessuna informazione disponibile.</div>
+        <span class="widget-cta">Apri vista radio →</span>
+      </button>
+    </div>
+  </section>
+
+  <section id="view-radio" class="app-view">
+    <!-- ROW 1: Now Playing + Preset Bose -->
+    <div class="grid-top">
+
+      <section class="card widget-now">
+        <div class="widget-label">In riproduzione</div>
+        <img id="nowFavicon" src="" alt="" style="display:none; position:absolute; top:14px; right:14px; width:44px; height:44px; object-fit:contain; border-radius:8px; background:var(--image-bg);">
+        <div class="now-title" id="nowTitle">—</div>
+        <div class="now-details" id="nowDetails"></div>
+        <div class="now-icy" id="nowIcy"></div>
+        <div class="controls">
+          <button onclick="sendKey('PLAY_PAUSE')">⏯</button>
+          <button onclick="sendKey('PREV_TRACK')">⏮</button>
+          <button onclick="sendKey('NEXT_TRACK')">⏭</button>
+          <button onclick="sendKey('MUTE')">🔇</button>
+          <input class="volume" id="volume" type="range" min="0" max="100" value="0" oninput="changeVolume(this.value)">
+          <span id="volumeText" class="vol-text">--</span>
+        </div>
+      </section>
+
+      <section class="card widget-presets">
+        <div class="widget-label">Preset Bose</div>
+        <div class="preset-row" id="presets"></div>
+      </section>
+
+    </div>
+
+    <!-- ROW 2: Search + Favorites -->
+    <div class="grid-bottom">
+
+      <div class="col-left">
+        <section class="card">
+          <div class="search-row">
+            <input id="query" class="searchbox" placeholder="Cerca radio..." onkeydown="if(event.key==='Enter') searchRadio()">
+            <button class="primary" onclick="searchRadio()">Cerca</button>
+          </div>
+          <div class="search-row" style="margin-top:8px">
+            <input id="country" placeholder="Paese (es. IT)">
+          </div>
+        </section>
+        <section id="debugPanel" class="card debug-panel" hidden>
+          <div class="widget-label">Debug metadata</div>
+          <pre id="debugMeta" class="debug-meta">{}</pre>
+        </section>
+        <section class="card">
+          <div id="results"><div style="color:var(--muted); font-size:13px;">Cerca una radio per iniziare.</div></div>
+          <div class="error" id="error"></div>
+        </section>
       </div>
-    </section>
 
-    <section class="card widget-presets">
-      <div class="widget-label">Preset Bose</div>
-      <div class="preset-row" id="presets"></div>
-    </section>
+      <div class="col-right">
+        <section class="card widget-favorites">
+          <div class="widget-label">⭐ Preferiti</div>
+          <div id="favorites" style="margin-top:10px">
+            <div id="fav-debug" style="color:var(--muted); font-size:13px;">Caricamento...</div>
+          </div>
+        </section>
+      </div>
 
-  </div>
-
-  <!-- ROW 2: Search + Favorites -->
-  <div class="grid-bottom">
-
-    <div class="col-left">
-      <section class="card">
-        <div class="search-row">
-          <input id="query" class="searchbox" placeholder="Cerca radio..." onkeydown="if(event.key==='Enter') searchRadio()">
-          <button class="primary" onclick="searchRadio()">Cerca</button>
-        </div>
-        <div class="search-row" style="margin-top:8px">
-          <input id="country" placeholder="Paese (es. IT)">
-        </div>
-      </section>
-      <section id="debugPanel" class="card debug-panel" hidden>
-        <div class="widget-label">Debug metadata</div>
-        <pre id="debugMeta" class="debug-meta">{}</pre>
-      </section>
-      <section class="card">
-        <div id="results"><div style="color:var(--muted); font-size:13px;">Cerca una radio per iniziare.</div></div>
-        <div class="error" id="error"></div>
-      </section>
     </div>
+  </section>
 
-    <div class="col-right">
-      <section class="card widget-favorites">
-        <div class="widget-label">⭐ Preferiti</div>
-        <div id="favorites" style="margin-top:10px">
-          <div id="fav-debug" style="color:var(--muted); font-size:13px;">Caricamento...</div>
-        </div>
+  <section id="view-spotify" class="app-view" hidden>
+    <div class="spotify-shell">
+      <section class="card spotify-hero">
+        <div class="widget-label">Spotify</div>
+        <h2>Spotify Connect</h2>
+        <p>La sezione Spotify è pronta come vista dedicata. Per ora puoi usarla come spazio per i controlli e i widget futuri, mentre la radio resta la vista di default.</p>
       </section>
-    </div>
 
-  </div>
+      <div class="spotify-grid">
+        <section class="card spotify-card">
+          <div class="widget-label">Playlist</div>
+          <div class="mini-title">Raccolta recente</div>
+          <div class="mini-copy">Nessuna playlist configurata.</div>
+        </section>
+
+        <section class="card spotify-card">
+          <div class="widget-label">Dispositivi</div>
+          <div class="mini-title">Bose + Spotify Connect</div>
+          <div class="mini-copy">Disponibile sul diffusore.</div>
+        </section>
+      </div>
+    </div>
+  </section>
 
 </main>
 

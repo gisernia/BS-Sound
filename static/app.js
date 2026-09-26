@@ -6,24 +6,91 @@ let volumeTimer    = null;
 let currentPresetsData = [];
 let targetStationForPreset = null;
 let favoritesSet   = new Set(); // ID delle stazioni già nei preferiti
+let currentView = "radio";
 
 const DEBUG = !!(window.APP_DEBUG === true);
 const THEME_STORAGE_KEY = "soundtouch-radio-theme";
 
+function setView(view) {
+    const validViews = ["home", "radio", "spotify"];
+    if (!validViews.includes(view)) return;
+
+    currentView = view;
+
+    document.querySelectorAll(".app-view").forEach(section => {
+        const isVisible = section.id === "view-" + view;
+        section.hidden = !isVisible;
+    });
+
+    document.querySelectorAll(".nav-tab").forEach(button => {
+        button.classList.toggle("active", button.dataset.view === view);
+    });
+}
+
+function bindNavigation() {
+    document.querySelectorAll(".nav-tab").forEach(button => {
+        button.addEventListener("click", () => setView(button.dataset.view));
+    });
+
+    document.querySelectorAll("[data-open-view]").forEach(button => {
+        button.addEventListener("click", () => setView(button.dataset.openView));
+    });
+}
+
+function updateHomeNowCard(now = {}) {
+    const homeTitle = document.getElementById("homeNowTitle");
+    const homeDetails = document.getElementById("homeNowDetails");
+    if (!homeTitle || !homeDetails) return;
+
+    const stationName = normalizeText(now.stationName || now.name || now.track || "");
+    const artist = normalizeText(now.artist);
+    const album = normalizeText(now.album);
+    const details = [artist, album].filter(Boolean).join(" · ");
+    const label = stationName || "Nessuna stazione";
+
+    homeTitle.textContent = label;
+    homeDetails.textContent = details || "Nessuna informazione disponibile.";
+}
+
 // ── Theme ────────────────────────────────────────────────────
 
-function setTheme(theme) {
-    const valid = ["system", "light", "dark"].includes(theme) ? theme : "system";
+function applyTheme(theme) {
+    const valid = ["light", "dark"].includes(theme) ? theme : "light";
     document.documentElement.dataset.theme = valid;
     try { localStorage.setItem(THEME_STORAGE_KEY, valid); } catch (_) {}
+
+    const toggle = document.getElementById("themeToggle");
+    if (!toggle) return;
+
+    if (valid === "dark") {
+        toggle.textContent = "☀️";
+        toggle.setAttribute("aria-label", "Passa a tema chiaro");
+        toggle.title = "Passa a tema chiaro";
+    } else {
+        toggle.textContent = "🌙";
+        toggle.setAttribute("aria-label", "Passa a tema scuro");
+        toggle.title = "Passa a tema scuro";
+    }
+}
+
+function setTheme(theme) {
+    const next = theme === "dark" ? "dark" : "light";
+    applyTheme(next);
 }
 
 function initializeTheme() {
-    let theme = "system";
+    let theme = "dark";
     try { theme = localStorage.getItem(THEME_STORAGE_KEY) || theme; } catch (_) {}
-    if (!["system", "light", "dark"].includes(theme)) theme = "system";
-    document.documentElement.dataset.theme = theme;
-    document.getElementById("themeSelect").value = theme;
+    if (!["light", "dark"].includes(theme)) theme = "dark";
+    applyTheme(theme);
+
+    const toggle = document.getElementById("themeToggle");
+    if (toggle) {
+        toggle.addEventListener("click", () => {
+            const current = document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+            applyTheme(current === "dark" ? "light" : "dark");
+        });
+    }
 }
 
 // ── API helper ───────────────────────────────────────────────
@@ -124,6 +191,7 @@ async function refresh() {
 
         document.getElementById("nowTitle").textContent = stationName || "";
         document.getElementById("nowDetails").textContent = details || "";
+        updateHomeNowCard(now);
 
         const icyEl = document.getElementById("nowIcy");
         if (tickerText && tickerText !== lastTickerText) {
@@ -440,6 +508,8 @@ function showError(error) {
 // ── Init ──────────────────────────────────────────────────────
 
 initializeTheme();
+bindNavigation();
+setView(currentView);
 loadFavorites();
 refresh();
 setInterval(refresh, 5000);

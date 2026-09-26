@@ -4,6 +4,8 @@ Interfaccia web locale, semplice e responsive per controllare un diffusore **Bos
 
 Il progetto è pensato per essere eseguito nella rete domestica: non richiede account, database o dipendenze Python esterne.
 
+> Aggiornamento: stiamo preparando l'integrazione con Spotify. La base UI e la navigazione sono state introdotte per supportare la vista dedicata; completeremo l'integrazione e poi aggiorneremo definitivamente questo README con la documentazione finale.
+
 Creato da [Beasof.com](https://beasof.com).
 
 > Questo progetto non è affiliato, associato o approvato da Bose.
