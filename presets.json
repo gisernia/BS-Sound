@@ -1,0 +1,27 @@
+{
+  "1": {
+    "name": "RDS relax",
+    "stream_url": "http://icstream.rds.radio/rdsrelax",
+    "favicon": "https://rdsrelax.it/images/logo.png"
+  },
+  "6": {
+    "name": "Exclusively Genesis",
+    "stream_url": "http://2.mystreaming.net/er/genesis/icecast.audio",
+    "favicon": "https://you.radio/cdn-cgi/image/width=400,quality=75/https://manager.uber.radio/static/uploads/station/e82e9b96-c422-49ac-99fc-ae6cf3747bef.jpg"
+  },
+  "5": {
+    "name": "Exclusively Peter Gabriel",
+    "stream_url": "http://nl4.mystreaming.net/er/petergabriel/icecast.audio",
+    "favicon": "https://you.radio/cdn-cgi/image/width=400,quality=75/https://manager.uber.radio/static/uploads/station/f5d2bc84-34f8-417b-9d0e-55470919cc16.jpg"
+  },
+  "3": {
+    "name": "Radio Romanista | La Roma come non l'avete mai sentita FM 97.7",
+    "stream_url": "http://romanista.newradio.it/stream",
+    "favicon": "https://radioromanista.it/wp-content/uploads/2023/01/favicoR.svg"
+  },
+  "2": {
+    "name": "Radio Monte Carlo Italia",
+    "stream_url": "http://icy.unitedradio.it/rmcweb005",
+    "favicon": ""
+  }
+}

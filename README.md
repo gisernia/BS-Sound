@@ -127,6 +127,9 @@ Per interrompere: `Ctrl+C`.
 | `SERVER_HOST` | Interfaccia di rete su cui esporre il server | `0.0.0.0` |
 | `SERVER_PORT` | Porta dell'interfaccia web | `8765` |
 | `RADIO_BROWSER_HOST` | Endpoint dell'API Radio Browser | `https://de1.api.radio-browser.info` |
+| `SPOTIFY_PREMIUM_ENABLED` | Abilita la connessione Spotify quando il progetto è stato autorizzato per Spotify Premium Developer (`Y`) oppure lo lascia disattivato per default (`N`) | `N` |
+
+> Per il momento il flusso Spotify è disabilitato di default: la UI mostra il pulsante in grigio e non cliccabile finché `SPOTIFY_PREMIUM_ENABLED` non viene impostato a `Y`.
 
 ## Debug metadati ICY
 

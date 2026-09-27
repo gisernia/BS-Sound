@@ -1,0 +1,11 @@
+{
+  "id": "1a79e996-8263-4e65-9d39-6e0e38dc6df4",
+  "name": "Radio Globo | Solo le migliori",
+  "country": "Italy",
+  "language": "italian",
+  "codec": "MP3",
+  "bitrate": 128,
+  "homepage": "https://radioglobo.it/",
+  "favicon": "",
+  "stream": "https://globo.newradio.it/globorm64"
+}

@@ -10,12 +10,14 @@ let currentView = "radio";
 
 const DEBUG = !!(window.APP_DEBUG === true);
 const THEME_STORAGE_KEY = "soundtouch-radio-theme";
+const VIEW_STORAGE_KEY = "soundtouch-current-view";
 
 function setView(view) {
     const validViews = ["home", "radio", "spotify"];
     if (!validViews.includes(view)) return;
 
     currentView = view;
+    try { localStorage.setItem(VIEW_STORAGE_KEY, view); } catch (_) {}
 
     document.querySelectorAll(".app-view").forEach(section => {
         const isVisible = section.id === "view-" + view;
@@ -50,6 +52,65 @@ function updateHomeNowCard(now = {}) {
 
     homeTitle.textContent = label;
     homeDetails.textContent = details || "Nessuna informazione disponibile.";
+}
+
+function updateSpotifyNowCard(state = {}) {
+    const titleEl = document.getElementById("spotifyTitle");
+    const artistEl = document.getElementById("spotifyArtist");
+    const statusEl = document.getElementById("spotifyStatus");
+    const coverEl = document.getElementById("spotifyCover");
+    const coverText = document.getElementById("spotifyCoverText");
+    const progress = document.getElementById("spotifyProgressBar");
+    const connectBtn = document.getElementById("spotifyConnectButton");
+    const premiumNotice = document.getElementById("spotifyPremiumNotice");
+    if (!titleEl || !artistEl || !statusEl || !coverEl || !coverText || !progress) return;
+
+    const premiumEnabled = window.SPOTIFY_PREMIUM_ENABLED === true;
+    const connected = !!state.connected;
+    const title = state.title || "Spotify Connect";
+    const subtitle = state.artist || "Nessun brano in riproduzione";
+    const accountLabel = connected ? (state.device || "Spotify Connect") : "Account non collegato";
+
+    titleEl.textContent = title;
+    artistEl.textContent = subtitle;
+    statusEl.textContent = accountLabel;
+    coverText.style.display = connected ? "none" : "block";
+    coverEl.style.backgroundImage = state.cover ? 'url("' + escapeHtml(state.cover) + '")' : "linear-gradient(135deg, #1ed760, #0f7f3f)";
+    coverEl.style.backgroundSize = state.cover ? "cover" : "auto";
+    coverEl.style.backgroundPosition = "center";
+    progress.style.width = connected ? "62%" : "18%";
+
+    if (premiumNotice) {
+        premiumNotice.hidden = premiumEnabled;
+    }
+
+    if (connectBtn) {
+        connectBtn.textContent = connected ? "Spotify connesso" : "Collega Spotify";
+        connectBtn.disabled = connected || !premiumEnabled;
+        connectBtn.title = premiumEnabled ? (connected ? "Spotify già connesso" : "") : "Abilitato solo con Spotify Premium Developer";
+    }
+}
+
+async function refreshSpotifyState() {
+    try {
+        const data = await api("/api/spotify/status");
+        updateSpotifyNowCard(data);
+    } catch (error) {
+        updateSpotifyNowCard({ connected: false, title: "Spotify non disponibile", artist: String(error.message || error) });
+    }
+}
+
+async function connectSpotify() {
+    try {
+        const data = await api("/api/spotify/login");
+        if (data.login_url) {
+            window.open(data.login_url, "_blank", "noopener,noreferrer");
+            return;
+        }
+        showError(new Error("Spotify non configurato."));
+    } catch (error) {
+        showError(error);
+    }
 }
 
 // ── Theme ────────────────────────────────────────────────────
@@ -509,7 +570,15 @@ function showError(error) {
 
 initializeTheme();
 bindNavigation();
+try {
+    const savedView = localStorage.getItem(VIEW_STORAGE_KEY) || "radio";
+    currentView = ["home", "radio", "spotify"].includes(savedView) ? savedView : "radio";
+} catch (_) {
+    currentView = "radio";
+}
 setView(currentView);
 loadFavorites();
 refresh();
+refreshSpotifyState();
 setInterval(refresh, 5000);
+setInterval(refreshSpotifyState, 15000);

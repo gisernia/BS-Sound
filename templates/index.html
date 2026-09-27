@@ -121,23 +121,58 @@
 
   <section id="view-spotify" class="app-view" hidden>
     <div class="spotify-shell">
-      <section class="card spotify-hero">
-        <div class="widget-label">Spotify</div>
-        <h2>Spotify Connect</h2>
-        <p>La sezione Spotify è pronta come vista dedicata. Per ora puoi usarla come spazio per i controlli e i widget futuri, mentre la radio resta la vista di default.</p>
+      <section class="card spotify-player">
+        <div class="spotify-player-layout">
+          <div class="spotify-cover" id="spotifyCover">
+            <span id="spotifyCoverText">♪</span>
+          </div>
+
+          <div class="spotify-meta">
+            <div class="widget-label">Spotify</div>
+            <h2 id="spotifyTitle">Spotify Connect</h2>
+            <div class="spotify-artist" id="spotifyArtist">Nessun brano in riproduzione</div>
+            <div class="spotify-status" id="spotifyStatus">Account non collegato</div>
+
+            <div class="spotify-progress">
+              <div class="spotify-progress-bar" id="spotifyProgressBar"></div>
+            </div>
+
+            <div class="spotify-times">
+              <span>0:00</span>
+              <span>0:00</span>
+            </div>
+
+            <div class="spotify-controls">
+              <button type="button" aria-label="Brano precedente">⏮</button>
+              <button type="button" class="spotify-primary" aria-label="Play/Pausa">⏸</button>
+              <button type="button" aria-label="Brano successivo">⏭</button>
+            </div>
+
+            <div class="spotify-actions">
+              <button type="button" class="primary" id="spotifyConnectButton" onclick="connectSpotify()">Collega Spotify</button>
+              <div class="spotify-premium-note" id="spotifyPremiumNotice" role="alert" hidden>Abilitato solo con Spotify Premium Developer</div>
+            </div>
+          </div>
+        </div>
       </section>
 
       <div class="spotify-grid">
         <section class="card spotify-card">
           <div class="widget-label">Playlist</div>
           <div class="mini-title">Raccolta recente</div>
-          <div class="mini-copy">Nessuna playlist configurata.</div>
+          <div class="mini-copy">Canzoni preferite, mix a tema radio e album da riascoltare.</div>
+          <ul class="spotify-list">
+            <li>Morning Echo</li>
+            <li>Deep House Flow</li>
+            <li>Soft FM</li>
+          </ul>
         </section>
 
         <section class="card spotify-card">
           <div class="widget-label">Dispositivi</div>
           <div class="mini-title">Bose + Spotify Connect</div>
-          <div class="mini-copy">Disponibile sul diffusore.</div>
+          <div class="mini-copy">Disponibile sul diffusore della stanza.</div>
+          <div class="device-pill">GiSoundTouch</div>
         </section>
       </div>
     </div>
@@ -177,6 +212,7 @@
 
 <script>
   window.APP_DEBUG = __APP_DEBUG__;
+  window.SPOTIFY_PREMIUM_ENABLED = __SPOTIFY_PREMIUM_ENABLED__;
 </script>
 <script src="/static/app.js?v=20260925-1"></script>
 </body>

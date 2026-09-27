@@ -3,6 +3,7 @@
 # Copyright 2026 Beasof.com
 # Licensed under the Apache License, Version 2.0.
 
+import base64
 import html
 import json
 import re
@@ -33,6 +34,14 @@ DEFAULT_CONFIG = {
     "SERVER_HOST":        "0.0.0.0",
     "SERVER_PORT":        "8765",
     "RADIO_BROWSER_HOST": "https://de1.api.radio-browser.info",
+    "SPOTIFY_CLIENT_ID":  "",
+    "SPOTIFY_CLIENT_SECRET": "",
+    "SPOTIFY_REDIRECT_URI": "http://localhost:8765/api/spotify/callback",
+    "SPOTIFY_SCOPE": "user-read-playback-state user-read-currently-playing user-modify-playback-state",
+    "SPOTIFY_ACCESS_TOKEN": "",
+    "SPOTIFY_REFRESH_TOKEN": "",
+    "SPOTIFY_ACCOUNT_NAME": "",
+    "SPOTIFY_PREMIUM_ENABLED": "N",
     "debug_icy":          "false",
 }
 
@@ -54,7 +63,176 @@ BOSE_IP          = CONFIG["BOSE_IP"]
 SERVER_HOST      = CONFIG["SERVER_HOST"]
 SERVER_PORT      = int(CONFIG["SERVER_PORT"])
 RADIO_BROWSER_HOST = CONFIG["RADIO_BROWSER_HOST"].rstrip("/")
+SPOTIFY_AUTH_URL = "https://accounts.spotify.com/authorize"
+SPOTIFY_API_BASE = "https://api.spotify.com/v1"
 debug_icy = str(CONFIG.get("debug_icy", "false")).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def spotify_premium_enabled():
+    return str(CONFIG.get("SPOTIFY_PREMIUM_ENABLED", "N")).strip().upper() in {"1", "TRUE", "YES", "Y", "ON"}
+
+
+def write_config_value(key, value):
+    config_path = CONFIG_FILE
+    if not config_path.exists():
+        config_path.write_text("", encoding="utf-8")
+
+    lines = config_path.read_text(encoding="utf-8").splitlines()
+    found = False
+    new_lines = []
+    for line in lines:
+        if line.strip().startswith(f"{key}="):
+            new_lines.append(f"{key}={value}")
+            found = True
+        else:
+            new_lines.append(line)
+    if not found:
+        new_lines.append(f"{key}={value}")
+    config_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
+    global CONFIG
+    CONFIG = load_config()
+
+
+def spotify_auth_url():
+    client_id = str(CONFIG.get("SPOTIFY_CLIENT_ID", "")).strip()
+    if not client_id:
+        return ""
+    redirect_uri = str(CONFIG.get("SPOTIFY_REDIRECT_URI", "http://localhost:8765/api/spotify/callback")).strip()
+    scope = str(CONFIG.get("SPOTIFY_SCOPE", "user-read-playback-state user-read-currently-playing user-modify-playback-state")).strip()
+    params = urllib.parse.urlencode({
+        "client_id": client_id,
+        "response_type": "code",
+        "redirect_uri": redirect_uri,
+        "scope": scope,
+        "show_dialog": "true",
+    })
+    return f"{SPOTIFY_AUTH_URL}?{params}"
+
+
+def spotify_exchange_code(code):
+    client_id = str(CONFIG.get("SPOTIFY_CLIENT_ID", "")).strip()
+    client_secret = str(CONFIG.get("SPOTIFY_CLIENT_SECRET", "")).strip()
+    redirect_uri = str(CONFIG.get("SPOTIFY_REDIRECT_URI", "http://localhost:8765/api/spotify/callback")).strip()
+    if not client_id or not client_secret:
+        raise ValueError("Spotify client_id/client_secret mancanti in config.cfg")
+
+    body = urllib.parse.urlencode({
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": redirect_uri,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        "https://accounts.spotify.com/api/token",
+        data=body,
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Authorization": "Basic " + base64.b64encode(f"{client_id}:{client_secret}".encode("utf-8")).decode("ascii"),
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+
+    access_token = data.get("access_token", "")
+    refresh_token = data.get("refresh_token", "")
+    if access_token:
+        write_config_value("SPOTIFY_ACCESS_TOKEN", access_token)
+    if refresh_token:
+        write_config_value("SPOTIFY_REFRESH_TOKEN", refresh_token)
+
+    return data
+
+
+def spotify_me():
+    token = str(CONFIG.get("SPOTIFY_ACCESS_TOKEN", "")).strip()
+    if not token:
+        return None
+    req = urllib.request.Request(
+        f"{SPOTIFY_API_BASE}/me",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+
+
+def spotify_currently_playing():
+    token = str(CONFIG.get("SPOTIFY_ACCESS_TOKEN", "")).strip()
+    if not token:
+        return None
+    req = urllib.request.Request(
+        f"{SPOTIFY_API_BASE}/me/player/currently-playing",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code in (204, 404):
+            return {"item": None, "is_playing": False}
+        raise
+
+
+def spotify_status():
+    access_token = str(CONFIG.get("SPOTIFY_ACCESS_TOKEN", "")).strip()
+    account_name = str(CONFIG.get("SPOTIFY_ACCOUNT_NAME", "")).strip()
+
+    if access_token:
+        user = spotify_me() or {}
+        account_name = user.get("display_name") or account_name or "Spotify account"
+        write_config_value("SPOTIFY_ACCOUNT_NAME", account_name)
+        try:
+            payload = spotify_currently_playing() or {}
+        except Exception:
+            payload = {}
+
+        item = payload.get("item") or {}
+        track_name = item.get("name") or "Spotify Connect"
+        artists = item.get("artists") or []
+        artist_text = ", ".join(a.get("name", "") for a in artists if a.get("name"))
+        album = item.get("album") or {}
+        images = album.get("images") or []
+        cover = images[-1].get("url", "") if images else ""
+
+        if not item:
+            return {
+                "ok": True,
+                "connected": True,
+                "title": "Spotify Connect",
+                "artist": "Nessun brano in riproduzione",
+                "subtitle": "Account Spotify",
+                "cover": "",
+                "device": "Spotify Connect",
+                "login_url": "",
+                "configured": True,
+            }
+
+        return {
+            "ok": True,
+            "connected": True,
+            "title": track_name,
+            "artist": artist_text or "Artista sconosciuto",
+            "subtitle": "Spotify account",
+            "cover": cover,
+            "device": "Spotify Connect",
+            "login_url": "",
+            "configured": True,
+        }
+
+    return {
+        "ok": True,
+        "connected": False,
+        "title": "Spotify non collegato",
+        "artist": "Configura i credenziali Spotify per collegare l'account",
+        "subtitle": "Account Spotify",
+        "cover": "",
+        "device": "Spotify Connect",
+        "login_url": spotify_auth_url(),
+        "configured": bool(str(CONFIG.get("SPOTIFY_CLIENT_ID", "")).strip()),
+    }
 
 
 # ============================================================
@@ -534,7 +712,9 @@ def render_template(name):
         raise FileNotFoundError(f"Template non trovato: {name}")
     if name == "index.html":
         html = path.read_text(encoding="utf-8")
-        return html.replace("__APP_DEBUG__", "true" if debug_icy else "false").encode("utf-8")
+        html = html.replace("__APP_DEBUG__", "true" if debug_icy else "false")
+        html = html.replace("__SPOTIFY_PREMIUM_ENABLED__", "true" if spotify_premium_enabled() else "false")
+        return html.encode("utf-8")
     return path.read_bytes()
 
 def serve_static(filename):
@@ -640,6 +820,52 @@ class Handler(BaseHTTPRequestHandler):
             # Favorites
             if path == "/api/favorites":
                 self.send_json({"ok": True, "favorites": load_favorites()})
+                return
+
+            # Spotify status
+            if path == "/api/spotify/status":
+                self.send_json(spotify_status())
+                return
+
+            # Spotify callback
+            if path == "/api/spotify/callback":
+                qs = urllib.parse.parse_qs(parsed.query)
+                code = qs.get("code", [""])[0]
+                if not code:
+                    self.send_json({"ok": False, "error": "Spotify auth code missing"}, 400)
+                    return
+                try:
+                    spotify_exchange_code(code)
+                    html_page = """
+<!doctype html>
+<html lang="it">
+<head><meta charset="utf-8"><title>Spotify connected</title></head>
+<body style="font-family:sans-serif;display:grid;place-items:center;height:100vh;background:#111;color:#eee;">
+  <div style="text-align:center;">
+    <h2 style="margin-bottom:12px;">Spotify collegato</h2>
+    <p>Puoi chiudere questa finestra e tornare all'app.</p>
+  </div>
+  <script>setTimeout(() => { try { window.close(); } catch (e) {} }, 1200);</script>
+</body>
+</html>
+""".encode("utf-8")
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.send_header("Content-Length", str(len(html_page)))
+                    self.end_headers()
+                    self.wfile.write(html_page)
+                    return
+                except Exception as exc:
+                    self.send_json({"ok": False, "error": str(exc)}, 500)
+                    return
+
+            # Spotify login URL
+            if path == "/api/spotify/login":
+                login_url = spotify_auth_url()
+                if not login_url:
+                    self.send_json({"ok": False, "error": "Spotify non configurato. Inserisci client_id e redirect_uri in config.cfg"}, 400)
+                    return
+                self.send_json({"ok": True, "login_url": login_url})
                 return
 
             self.send_json({"ok": False, "error": "Not found"}, 404)
